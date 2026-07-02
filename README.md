@@ -38,7 +38,7 @@ App Android nativa (Capacitor + React con plugins Kotlin). Misma lógica que el 
 Servidor Node.js que se sienta entre los clientes y Jellyfin. **No es obligatorio** — los clientes pueden conectarse directamente a Jellyfin. Sirve para:
 
 - **Búsqueda rápida**: SQLite + FTS5, tolerante a guiones y tildes
-- **Caché de imágenes**: evita servir portadas desde Jellyfin en cada请求
+- **Caché de imágenes**: evita servir portadas desde Jellyfin en cada petición
 - **Sincronización periódica**: mantiene una copia local del catálogo (artistas, álbumes, pistas, géneros)
 - **Cifrado de tokens**: AES-256-GCM para los tokens de sesión de Jellyfin
 - **Rate limiting**: 120 req/min por IP
