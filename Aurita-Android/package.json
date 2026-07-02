@@ -1,0 +1,29 @@
+{
+  "name": "aurita-android",
+  "version": "0.1.0",
+  "description": "Aurita para Android — reproductor de música Jellyfin",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "cap:add": "npx cap add android && bash scripts/install-native-plugin.sh",
+    "install-native-plugin": "bash scripts/install-native-plugin.sh",
+    "cap:sync": "npm run build && npx cap sync android",
+    "cap:open": "npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "6.1.2",
+    "@capacitor/core": "6.1.2",
+    "@capacitor/local-notifications": "6.1.0",
+    "lucide-react": "0.469.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "6.26.2",
+    "zustand": "4.5.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "4.3.4",
+    "@capacitor/cli": "6.1.2",
+    "vite": "5.4.11"
+  }
+}
