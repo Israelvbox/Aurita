@@ -1,8 +1,11 @@
 package com.aurita.app
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -15,17 +18,28 @@ import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
+import com.getcapacitor.PermissionState
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import com.getcapacitor.annotation.Permission
+import com.getcapacitor.annotation.PermissionCallback
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.SettableFuture
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
-@CapacitorPlugin(name = "AuritaPlayer")
+@CapacitorPlugin(
+    name = "AuritaPlayer",
+    permissions = [
+        Permission(
+            alias = "bluetooth",
+            strings = [Manifest.permission.BLUETOOTH_CONNECT]
+        )
+    ]
+)
 class AuritaPlayerPlugin : Plugin() {
 
     private val preloadExecutor = Executors.newSingleThreadExecutor()
@@ -83,7 +97,8 @@ class AuritaPlayerPlugin : Plugin() {
             val data = JSObject()
             data.put("isPlaying",    pl.isPlaying)
             data.put("duration",     if (pl.duration > 0) pl.duration / 1000.0 else 0.0)
-            data.put("position",     pl.currentPosition / 1000.0)
+            val pos = pl.currentPosition
+            data.put("position",     if (pos > 0) pos / 1000.0 else 0.0)
             data.put("currentIndex", pl.currentMediaItemIndex)
             data.put("ended",        pl.playbackState == Player.STATE_ENDED)
             instance?.notifyListeners("stateChanged", data)
@@ -151,13 +166,13 @@ class AuritaPlayerPlugin : Plugin() {
 
     @PluginMethod
     fun pause(call: PluginCall) {
-        activity.runOnUiThread { player?.pause() }
+        activity.runOnUiThread { player?.apply { pause(); notifyStateChange(this) } }
         call.resolve()
     }
 
     @PluginMethod
     fun resume(call: PluginCall) {
-        activity.runOnUiThread { player?.play() }
+        activity.runOnUiThread { player?.apply { play(); notifyStateChange(this) } }
         call.resolve()
     }
 
@@ -165,7 +180,8 @@ class AuritaPlayerPlugin : Plugin() {
     fun next(call: PluginCall) {
         activity.runOnUiThread {
             val p = player ?: return@runOnUiThread
-            if (p.hasNextMediaItem()) p.seekToNext() else p.seekTo(0)
+            p.seekToNext()
+            p.play()
         }
         call.resolve()
     }
@@ -175,6 +191,7 @@ class AuritaPlayerPlugin : Plugin() {
         activity.runOnUiThread {
             val p = player ?: return@runOnUiThread
             if (p.hasPreviousMediaItem()) p.seekToPrevious() else p.seekTo(0)
+            p.play()
         }
         call.resolve()
     }
@@ -184,25 +201,7 @@ class AuritaPlayerPlugin : Plugin() {
         val seconds = call.getDouble("seconds") ?: 0.0
         activity.runOnUiThread {
             val p = player ?: return@runOnUiThread
-            val idx = p.currentMediaItemIndex
-            val item = p.currentMediaItem ?: return@runOnUiThread
-            val uri = item.localConfiguration?.uri?.toString() ?: return@runOnUiThread
-
-            val ticks = (seconds * 10_000_000).toLong()
-            val newUri = if (uri.contains("startTimeTicks")) {
-                uri.replace(Regex("startTimeTicks=\\d+"), "startTimeTicks=$ticks")
-            } else {
-                "$uri${if (uri.contains("?")) "&" else "?"}startTimeTicks=$ticks"
-            }
-
-            val newItem = MediaItem.Builder()
-                .setMediaId(item.mediaId)
-                .setUri(Uri.parse(newUri))
-                .setMediaMetadata(item.mediaMetadata)
-                .build()
-            p.replaceMediaItem(idx, newItem)
-            p.prepare()
-            if (p.playWhenReady) p.play()
+            p.seekTo((seconds * 1000L).toLong())
         }
         call.resolve()
     }
@@ -291,6 +290,24 @@ class AuritaPlayerPlugin : Plugin() {
                 try { dataSource.close() } catch (_: Exception) {}
             }
         }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun requestBluetoothPermission(call: PluginCall) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            call.resolve()
+            return
+        }
+        if (getPermissionState("bluetooth") == PermissionState.GRANTED) {
+            call.resolve()
+            return
+        }
+        requestPermissionForAlias("bluetooth", call, "bluetoothPermissionCallback")
+    }
+
+    @PermissionCallback
+    fun bluetoothPermissionCallback(call: PluginCall) {
         call.resolve()
     }
 

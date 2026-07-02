@@ -4,12 +4,8 @@
  * Descarga la biblioteca completa del servidor una vez y la indexa en
  * memoria con flexsearch. Búsqueda de 8000 canciones: <1ms.
  * Se actualiza solo cuando el servidor sincroniza con Jellyfin (versión nueva).
- *
- * Sin servidor (modo directo a Jellyfin): esta capa no actúa, las
- * búsquedas van a Jellyfin como siempre.
  */
 
-import { getServiceUrl } from './config.js';
 import { cacheStore } from '../db/storage.js';
 import { registerInvalidator } from './cacheManager.js';
 
@@ -55,15 +51,14 @@ function matchScore(item, terms) {
  * cada vez que el usuario hace una búsqueda (para detectar nuevas syncs).
  */
 export async function loadLocalIndex() {
+  const { getServiceUrl } = await import('./config.js');
   const serviceUrl = getServiceUrl();
   if (!serviceUrl) return false;
 
   try {
-    // Enviamos nuestra versión para que el servidor responda 304 si no hay cambios
     const headers = { 'X-Jellyfin-Token': '', 'X-Jellyfin-UserId': '' };
     if (_version) headers['X-Index-Version'] = _version;
 
-    // Incluimos las credenciales igual que serviceRequest
     const { jellyfin } = await import('./jellyfin.js');
     headers['X-Jellyfin-Token']  = jellyfin.token  || '';
     headers['X-Jellyfin-UserId'] = jellyfin.userId || '';

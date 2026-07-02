@@ -49,7 +49,7 @@ export function Favorites() {
     <div className="page">
       <div className="page-header"><h1 className="page-title">Me gusta</h1></div>
       {tracks.length > 0 && (
-        <button className="play-all-btn" onClick={() => playItem(tracks[0], tracks)}>
+        <button className="play-all-btn" onClick={() => playItem(tracks[0], tracks, 'list')}>
           <Play size={18} fill="currentColor" /> Reproducir todo
         </button>
       )}
@@ -57,7 +57,7 @@ export function Favorites() {
        <div className="track-list">
          {tracks.map((t) => (
            <div key={t.Id} className={`track-row ${t.Id===currentId?'track-row--active':''}`}
-             onClick={() => playItem(t, tracks)} onTouchStart={() => warmTrack(t.Id)}>
+             onClick={() => playItem(t, tracks, 'list')} onTouchStart={() => warmTrack(t.Id)}>
               <CachedImage src={jellyfin.imageUrl(t.AlbumId||t.Id,'Primary',56)} alt="" className="track-row__art" />
               <div className="track-row__info">
                 <div className="track-row__name">{t.Name}</div>
@@ -140,7 +140,7 @@ export function PlaylistDetail() {
 
       <div className="detail-actions-bar">
         {tracks.length > 0 && (
-          <button className="fab" onClick={() => playItem(tracks[0], tracks)}><Play size={22} fill="currentColor" /></button>
+            <button className="fab" onClick={() => playItem(tracks[0], tracks, 'list')}><Play size={22} fill="currentColor" /></button>
         )}
         {isPlaylist && (
           <>
@@ -158,7 +158,7 @@ export function PlaylistDetail() {
           const fav = favoriteIds.has(t.Id);
           return (
             <div key={t.PlaylistItemId||t.Id} className={`track-row ${t.Id===currentId?'track-row--active':''}`}
-              onClick={() => playItem(t, tracks)} onTouchStart={() => warmTrack(t.Id)}>
+              onClick={() => playItem(t, tracks, 'list')} onTouchStart={() => warmTrack(t.Id)}>
               <span className="track-row__idx">{i+1}</span>
               <div className="track-row__info">
                 <div className="track-row__name">{t.Name}</div>

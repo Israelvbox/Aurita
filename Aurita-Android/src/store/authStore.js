@@ -3,23 +3,19 @@ import { jellyfin } from '../api/jellyfin.js';
 
 export const useAuthStore = create((set) => ({
   user:   null,
-  status: 'idle', // idle | checking | authenticated | unauthenticated
+  status: 'idle',
   error:  null,
 
   async restore() {
     set({ status: 'checking' });
     const ok = await jellyfin.restoreSession();
     if (ok) {
-      // Cargar perfil del usuario para tener el nombre disponible en la UI
       try {
         const userData = await jellyfin.request(`/Users/${jellyfin.userId}`);
         set({ user: userData, status: 'authenticated' });
       } catch {
         set({ status: 'authenticated' });
       }
-      // Notificar al servidor que hay sesión activa para que sincronice
-      // si aún no lo ha hecho (pasa cuando el cliente restaura sesión
-      // directamente desde Jellyfin sin pasar por /Users/AuthenticateByName)
       const { getServiceUrl } = await import('../api/config.js');
       const serviceUrl = getServiceUrl();
       if (serviceUrl) {
@@ -37,11 +33,10 @@ export const useAuthStore = create((set) => ({
     return ok;
   },
 
-  // mode: 'direct' (Jellyfin) | 'service' (intermediario Aurita)
-  async login(serverUrl, username, password, mode = 'direct') {
+  async login(serverUrl, username, password) {
     set({ status: 'checking', error: null });
     try {
-      const user = await jellyfin.login(serverUrl, username, password, mode);
+      const user = await jellyfin.login(serverUrl, username, password);
       set({ user, status: 'authenticated', error: null });
     } catch (err) {
       set({ status: 'unauthenticated', error: err.message });

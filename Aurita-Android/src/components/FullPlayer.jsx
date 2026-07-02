@@ -67,72 +67,68 @@ export default function FullPlayer({ visible, onClose }) {
           <CachedImage src={jellyfin.imageUrl(current.AlbumId || current.Id, 'Primary', 600)} alt="" className="full-player__art" />
         </div>
 
-        {/* Info + acciones rápidas */}
-        <div className="full-player__info-row">
-          <div className="full-player__meta">
-            <div className="full-player__title">{current.Name}</div>
-            {artist ? (
-              <button className="full-player__artist full-player__artist--link"
-                onClick={() => { onClose(); navigate(`/artist/${artist.Id}`, { state: { name: artist.Name } }); }}>
-                {artist.Name}
-              </button>
-            ) : (
-              <div className="full-player__artist">{current.AlbumArtist}</div>
-            )}
+        {/* Bloque inferior: info + barra + botones */}
+        <div className="full-player__bottom">
+          <div className="full-player__info-row">
+            <div className="full-player__meta">
+              <div className="full-player__title">{current.Name}</div>
+              {artist ? (
+                <button className="full-player__artist full-player__artist--link"
+                  onClick={() => { onClose(); navigate(`/artist/${artist.Id}`, { state: { name: artist.Name } }); }}>
+                  {artist.Name}
+                </button>
+              ) : (
+                <div className="full-player__artist">{current.AlbumArtist}</div>
+              )}
+            </div>
+            <button
+              className={`fp-btn ${favoriteIds.has(current.Id) ? 'fp-btn--accent' : ''}`}
+              onClick={() => toggleFavorite(current.Id)}
+            >
+              <Heart size={24} fill={favoriteIds.has(current.Id) ? 'currentColor' : 'none'} />
+            </button>
           </div>
-          <button
-            className={`fp-btn ${favoriteIds.has(current.Id) ? 'fp-btn--accent' : ''}`}
-            onClick={() => toggleFavorite(current.Id)}
-          >
-            <Heart size={24} fill={favoriteIds.has(current.Id) ? 'currentColor' : 'none'} />
-          </button>
-        </div>
 
-        {/* Barra de progreso */}
-        <div className="full-player__progress">
-          <input
-            type="range" min={0} max={duration || 0} value={currentTime}
-            onChange={(e) => seekTo(Number(e.target.value))}
-            className="fp-seek" style={{ '--p': `${pct}%` }}
-          />
-          <div className="full-player__times">
-            <span>{formatTime(currentTime)}</span>
-            <span>{formatTime(duration)}</span>
+          <div className="full-player__progress">
+            <input
+              type="range" min={0} max={duration || 0} value={currentTime}
+              onChange={(e) => seekTo(Number(e.target.value))}
+              className="fp-seek" style={{ '--p': `${pct}%` }}
+            />
+            <div className="full-player__times">
+              <span>{formatTime(currentTime)}</span>
+              <span>{formatTime(duration)}</span>
+            </div>
           </div>
-        </div>
 
-        {/* Controles principales */}
-        <div className="full-player__controls">
-          <button className={`fp-btn ${shuffle ? 'fp-btn--accent' : ''}`} onClick={toggleShuffle}>
-            <Shuffle size={20} />
-          </button>
-          <button className="fp-btn" onClick={prev}>
-            <SkipBack size={28} fill="currentColor" />
-          </button>
-          <button className="fp-play" onClick={togglePlay}>
-            {isPlaying
-              ? <Pause size={28} fill="currentColor" />
-              : <Play size={28} fill="currentColor" />}
-          </button>
-          <button className="fp-btn" onClick={() => next(true)}>
-            <SkipForward size={28} fill="currentColor" />
-          </button>
-          <button className={`fp-btn ${repeatMode !== 'off' ? 'fp-btn--accent' : ''}`} onClick={toggleRepeat}>
-            <RepeatIcon size={20} />
-          </button>
-        </div>
+          <div className="full-player__controls">
+            <button className={`fp-btn ${shuffle ? 'fp-btn--accent' : ''}`} onClick={toggleShuffle}>
+              <Shuffle size={20} />
+            </button>
+            <button className="fp-btn" onClick={prev}>
+              <SkipBack size={28} fill="currentColor" />
+            </button>
+            <button className="fp-play" onClick={togglePlay}>
+              {isPlaying
+                ? <Pause size={28} fill="currentColor" />
+                : <Play size={28} fill="currentColor" />}
+            </button>
+            <button className="fp-btn" onClick={() => next(true)}>
+              <SkipForward size={28} fill="currentColor" />
+            </button>
+            <button className={`fp-btn ${repeatMode !== 'off' ? 'fp-btn--accent' : ''}`} onClick={toggleRepeat}>
+              <RepeatIcon size={20} />
+            </button>
+          </div>
 
-        {/* Sin control de volumen: en Android se usa el del dispositivo,
-            tal como hace Spotify y el resto de apps de audio */}
-
-        {/* Acciones secundarias */}
-        <div className="full-player__actions">
-          <button className="fp-btn" onClick={() => setShowAddMenu(true)}>
-            <ListPlus size={22} />
-          </button>
-          <button className={`fp-btn ${showQueue ? 'fp-btn--accent' : ''}`} onClick={() => setShowQueue(true)}>
-            <ListMusic size={22} />
-          </button>
+          <div className="full-player__actions">
+            <button className="fp-btn" onClick={() => setShowAddMenu(true)}>
+              <ListPlus size={22} />
+            </button>
+            <button className={`fp-btn ${showQueue ? 'fp-btn--accent' : ''}`} onClick={() => setShowQueue(true)}>
+              <ListMusic size={22} />
+            </button>
+          </div>
         </div>
       </div>
 

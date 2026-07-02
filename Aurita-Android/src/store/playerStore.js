@@ -68,15 +68,18 @@ export const usePlayerStore = create((set, get) => {
   AuritaPlayer.addListener('stateChanged', (data) => {
     const prevIndex = get().currentIndex;
     const isNewTrack = data.currentIndex >= 0 && data.currentIndex !== prevIndex;
-    const offset = isNewTrack ? 0 : get()._seekOffset;
 
     const updates = { isPlaying: data.isPlaying };
-    // Tras seek, ExoPlayer reporta position 0 (nuevo stream con startTimeTicks).
-    // Sumamos el offset para que la barra muestre la posición real.
+    // Tras seek, ExoPlayer arranca nuevo stream con startTimeTicks → position=0.
+    // Sumamos _seekOffset para que la barra muestre la posición real hasta que
+    // ExoPlayer reporte una posición >0.
+    const offset = isNewTrack ? 0 : get()._seekOffset;
     if (data.position > 0 || get().currentTime === 0) {
       updates.currentTime = (data.position || 0) + offset;
     }
-    if (isNewTrack && data.duration > 0) updates.duration = data.duration;
+    // Tras seek vía URL (startTimeTicks), ExoPlayer reporta duración del stream
+    // parcial (total - seekPos). No sobreescribir la duración real de RunTimeTicks.
+    if (data.duration > 0 && get()._seekOffset === 0) updates.duration = data.duration;
     if (data.currentIndex >= 0) updates.currentIndex = data.currentIndex;
     if (isNewTrack) updates._seekOffset = 0;
     set(updates);
@@ -99,7 +102,7 @@ export const usePlayerStore = create((set, get) => {
       // Con queue nativa, ended solo llega cuando no hay más items.
       // JS maneja repeat/all: playItem reenvía la cola completa.
       if (get().repeatMode === 'all') {
-        get().playItem(get().queue[0], get().queue);
+        get().playItem(get().queue[0], get().queue, get().queueSource);
       }
     }
 
@@ -125,6 +128,7 @@ export const usePlayerStore = create((set, get) => {
     repeatMode: 'off',
     shuffle: false,
     autoFilling: false,
+    queueSource: 'other',
     _autoFillSourceId: null,
     _seekOffset: 0,
 
@@ -142,6 +146,10 @@ export const usePlayerStore = create((set, get) => {
         shuffle: saved.shuffle || false,
         duration: savedDuration,
       });
+
+      // Sincronizar repeat/shuffle nativos
+      AuritaPlayer.setRepeatMode({ mode: saved.repeatMode || 'off' }).catch(() => {});
+      AuritaPlayer.setShuffle({ enabled: saved.shuffle || false }).catch(() => {});
 
       // Sincronizar con el estado real del motor nativo
       try {
@@ -163,18 +171,22 @@ export const usePlayerStore = create((set, get) => {
       } catch {}
     },
 
-    playItem(item, queue = null) {
+    playItem(item, queue = null, source = 'other') {
       const newQueue = queue || [item];
       const index = newQueue.findIndex((i) => i.Id === item.Id);
       const idx = index === -1 ? 0 : index;
       const duration = item.RunTimeTicks ? Math.round(item.RunTimeTicks / 10_000_000) : 0;
-      set({ queue: newQueue, currentIndex: idx, duration, _autoFillSourceId: null, _seekOffset: 0 });
+      const repeatMode = source === 'list' ? 'all' : get().repeatMode;
+      set({ queue: newQueue, currentIndex: idx, duration, repeatMode, queueSource: source, _autoFillSourceId: null, _seekOffset: 0 });
 
       persistQueue(get());
 
       AuritaPlayer.play({
         tracks: serializeTracks(newQueue),
         startIndex: idx,
+      }).then(() => {
+        AuritaPlayer.setRepeatMode({ mode: repeatMode }).catch(() => {});
+        AuritaPlayer.setShuffle({ enabled: get().shuffle }).catch(() => {});
       }).catch((err) => console.warn('[Aurita] No se pudo iniciar la reproducción:', err));
 
       getEffectiveGenres(item).then((genres) => {
@@ -188,16 +200,26 @@ export const usePlayerStore = create((set, get) => {
       warmUpcoming(newQueue, idx);
     },
 
-    togglePlay() {
+    async togglePlay() {
       const { isPlaying } = get();
       if (get().currentIndex < 0) return;
-      if (isPlaying) AuritaPlayer.pause().catch(() => {});
-      else AuritaPlayer.resume().catch(() => {});
+      if (isPlaying) {
+        await AuritaPlayer.pause().catch(() => {});
+      } else {
+        await AuritaPlayer.resume().catch(() => {});
+        // Tras audio focus externo (WhatsApp, llamada), sincronizar estado nativo
+        try {
+          const state = await AuritaPlayer.getState();
+          if (state.currentIndex >= 0) {
+            set({ currentIndex: state.currentIndex, isPlaying: state.isPlaying, currentTime: state.position });
+          }
+        } catch {}
+      }
     },
 
     seekTo(seconds) {
       AuritaPlayer.seekTo({ seconds }).catch(() => {});
-      set({ currentTime: seconds, _seekOffset: seconds });
+      set({ currentTime: seconds, _seekOffset: 0 });
     },
 
     toggleRepeat() {
@@ -215,7 +237,7 @@ export const usePlayerStore = create((set, get) => {
       persistQueue(get());
     },
 
-    next(manual = false) {
+    async next(manual = false) {
       const { queue, currentIndex, repeatMode } = get();
       if (queue.length === 0) return;
 
@@ -225,29 +247,35 @@ export const usePlayerStore = create((set, get) => {
         return;
       }
 
-      // Con queue nativa, next delega en ExoPlayer (respeta shuffle nativo)
+      // Al final de la cola: loop si repeat all, sino parar
+      if (currentIndex + 1 >= queue.length) {
+        if (repeatMode === 'all') {
+          this.playItem(queue[0], queue, get().queueSource);
+        }
+        return;
+      }
+
       AuritaPlayer.next().catch(() => {
-        // Fallback si no hay cola nativa: JS calcula el índice
-        const { shuffle } = get();
+        const { queue, currentIndex, shuffle, repeatMode, queueSource } = get();
         let nextIndex = shuffle ? Math.floor(Math.random() * queue.length) : currentIndex + 1;
         if (nextIndex >= queue.length) {
           if (repeatMode === 'all') nextIndex = 0;
           else return;
         }
-        get().playItem(queue[nextIndex], queue);
+        get().playItem(queue[nextIndex], queue, queueSource);
       });
     },
 
     prev() {
       AuritaPlayer.prev().catch(() => {
-        const { queue, currentIndex } = get();
-        if (currentIndex > 0) get().playItem(queue[currentIndex - 1], queue);
+        const { queue, currentIndex, queueSource } = get();
+        if (currentIndex > 0) get().playItem(queue[currentIndex - 1], queue, queueSource);
       });
     },
 
     playFromQueueAt(index) {
-      const { queue } = get();
-      if (queue[index]) get().playItem(queue[index], queue);
+      const { queue, queueSource } = get();
+      if (queue[index]) get().playItem(queue[index], queue, queueSource);
     },
 
     removeFromQueue(index) {
@@ -269,7 +297,8 @@ export const usePlayerStore = create((set, get) => {
     },
 
     async _maybeAutoFill() {
-      const { queue, currentIndex, autoFilling, _autoFillSourceId } = get();
+      const { queue, currentIndex, autoFilling, _autoFillSourceId, repeatMode } = get();
+      if (repeatMode === 'all') return;
       const remaining = queue.length - 1 - currentIndex;
       const current = queue[currentIndex];
       if (!current || autoFilling || remaining > 2) return;

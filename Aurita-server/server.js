@@ -1,7 +1,7 @@
 import express    from 'express';
 import cors       from 'cors';
 import compression from 'compression';
-import { PORT, JELLYFIN_URL, JELLYFIN_EXTERNAL_URL } from './config.js';
+import { PORT, JELLYFIN_URL } from './config.js';
 import { initDb, getSyncMeta } from './db.js';
 import { startSync } from './sync.js';
 
@@ -18,6 +18,8 @@ import startupRoutes    from './routes/startup.js';
 import localIndexRoutes from './routes/localindex.js';
 import syncStatusRoutes from './routes/syncstatus.js';
 import imagesRoutes     from './routes/images.js';
+import audioRoutes      from './routes/audio.js';
+import proxyRoutes      from './routes/proxy.js';
 import { rateLimit }    from './middleware/rateLimit.js';
 
 const app = express();
@@ -47,6 +49,8 @@ app.use(playlistsRoutes);
 app.use(favoritesRoutes);
 app.use(instantmixRoutes);
 app.use(imagesRoutes);
+app.use(audioRoutes);
+app.use(proxyRoutes);
 
 app.use((_req, res) => res.status(404).json({ error: 'Ruta no encontrada' }));
 
@@ -56,9 +60,9 @@ app.listen(PORT, '0.0.0.0', () => {
 ║       Aurita Server v2.0.0           ║
 ║       Puerto: ${String(PORT).padEnd(24)}║
 ╚══════════════════════════════════════╝
-  Jellyfin interno:  ${JELLYFIN_URL}
-  Jellyfin externo:  ${JELLYFIN_EXTERNAL_URL || '(no configurado)'}
-  Compresión gzip:   activada
+  Jellyfin:       ${JELLYFIN_URL}
+  Proxy audio:    activado (prefix 1MB)
+  Catch-all API:  activado
 `);
 
   initDb();

@@ -23,7 +23,9 @@ export default function Row({ title, items, loading, onItemClick, kind = 'album'
               onClick={() => onItemClick?.(item)}
               onTouchStart={() => kind === 'album' && prefetchDetail(item.Id)}
             >
-              <CachedImage src={jellyfin.imageUrl(item.Id, 'Primary', 300)} alt={item.Name} loading="lazy"
+              <CachedImage src={kind === 'mix'
+                  ? jellyfin.imageUrl(item._mixItems?.[0]?.AlbumId || item._mixItems?.[0]?.Id, 'Primary', 300)
+                  : jellyfin.imageUrl(item.Id, 'Primary', 300)} alt={item.Name} loading="lazy"
                 onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />
               <div className="card__title">{item.Name}</div>
               {kind === 'album' && (

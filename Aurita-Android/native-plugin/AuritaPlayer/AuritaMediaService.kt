@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -26,6 +27,10 @@ import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionError
+import androidx.media3.common.Timeline
+import androidx.media3.common.PlaybackException
+import android.support.v4.media.session.PlaybackStateCompat
+import android.support.v4.media.session.MediaSessionCompat
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -58,9 +63,63 @@ class AuritaMediaService : MediaLibraryService() {
             val p = player ?: return
             if (p.isPlaying) {
                 AuritaPlayerPlugin.notifyStateChange(p)
+                updateBluetoothPlaybackState(p)
+                savePosition(p.currentPosition)
                 progressHandler.postDelayed(this, 250)
             }
         }
+    }
+
+    private fun updateBluetoothPlaybackState(p: ExoPlayer) {
+        val s = mediaSession ?: return
+        val posMs = p.currentPosition
+        if (posMs <= 0 || posMs == C.TIME_UNSET) return
+        try {
+            val compatField = MediaSession::class.java.getDeclaredField("sessionCompat")
+            compatField.isAccessible = true
+            val sessionCompat = compatField.get(s) as? MediaSessionCompat ?: return
+            sessionCompat.setPlaybackState(
+                PlaybackStateCompat.Builder()
+                    .setState(PlaybackStateCompat.STATE_PLAYING, posMs, 1.0f, SystemClock.elapsedRealtime())
+                    .setActions(
+                        PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                        PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                        PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+                        PlaybackStateCompat.ACTION_SEEK_TO
+                    )
+                    .build()
+            )
+        } catch (_: Exception) {}
+    }
+
+    private fun prefs() = getSharedPreferences("aurita_player", MODE_PRIVATE)
+
+    private fun savePosition(posMs: Long) {
+        if (posMs > 0 && posMs != C.TIME_UNSET) {
+            prefs().edit().putLong("last_position", posMs).apply()
+        }
+    }
+
+    private fun restorePlayback() {
+        val p = player ?: return
+        if (p.mediaItemCount > 0) return
+        val url = prefs().getString("last_url", null)
+        if (url.isNullOrEmpty()) return
+        val metadata = MediaMetadata.Builder()
+            .setTitle(prefs().getString("last_title", "") ?: "")
+            .setArtist(prefs().getString("last_artist", "") ?: "")
+            .setAlbumTitle(prefs().getString("last_album", "") ?: "")
+            .apply {
+                prefs().getString("last_artwork", null)
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { setArtworkUri(android.net.Uri.parse(it)) }
+            }
+            .build()
+        val pos = prefs().getLong("last_position", 0L)
+        val item = MediaItem.Builder().setUri(url).setMediaMetadata(metadata).build()
+        p.setMediaItem(item, pos)
+        p.prepare()
+        p.play()
     }
 
     private val libraryCallback = object : MediaLibrarySession.Callback {
@@ -75,6 +134,7 @@ class AuritaMediaService : MediaLibraryService() {
                     MediaMetadata.Builder()
                         .setTitle("Aurita")
                         .setIsBrowsable(true)
+                        .setIsPlayable(false)
                         .build()
                 )
                 .build()
@@ -184,6 +244,7 @@ class AuritaMediaService : MediaLibraryService() {
                     progressHandler.postDelayed(progressRunnable, 250)
                 } else {
                     progressHandler.removeCallbacks(progressRunnable)
+                    player?.let { savePosition(it.currentPosition) }
                 }
             }
 
@@ -196,7 +257,12 @@ class AuritaMediaService : MediaLibraryService() {
                 AuritaPlayerPlugin.notifyStateChange(player)
             }
 
-            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+                AuritaPlayerPlugin.notifyStateChange(player)
+                updateNotification()
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
                 AuritaPlayerPlugin.notifyError(error.message ?: "Error de reproducción")
             }
         })
@@ -263,7 +329,11 @@ class AuritaMediaService : MediaLibraryService() {
         val p = player ?: return
         val notification = buildNotification()
         if (p.isPlaying) {
-            startForeground(NOTIFICATION_ID, notification)
+            try {
+                startForeground(NOTIFICATION_ID, notification)
+            } catch (_: Exception) {
+                notificationManager?.notify(NOTIFICATION_ID, notification)
+            }
         } else {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_DETACH)
@@ -280,30 +350,21 @@ class AuritaMediaService : MediaLibraryService() {
         super.onStartCommand(intent, flags, startId)
 
         when (intent?.action) {
-            ACTION_PAUSE  -> player?.pause()
-            ACTION_RESUME -> player?.play()
+            ACTION_PAUSE  -> {
+                player?.let { savePosition(it.currentPosition); it.pause() }
+            }
+            ACTION_RESUME -> {
+                val p = player
+                if (p != null && p.mediaItemCount > 0 && p.currentPosition > 0) {
+                    p.play()
+                } else {
+                    restorePlayback()
+                }
+            }
             ACTION_PREV   -> AuritaPlayerPlugin.triggerPrev()
             ACTION_NEXT   -> AuritaPlayerPlugin.triggerNext()
         }
-
-        if (intent?.getBooleanExtra("resume_from_cold_start", false) == true) {
-            val url = intent.getStringExtra("resume_url")
-            if (!url.isNullOrEmpty()) {
-                val metadata = MediaMetadata.Builder()
-                    .setTitle(intent.getStringExtra("resume_title") ?: "")
-                    .setArtist(intent.getStringExtra("resume_artist") ?: "")
-                    .setAlbumTitle(intent.getStringExtra("resume_album") ?: "")
-                    .apply {
-                        intent.getStringExtra("resume_artwork")
-                            ?.takeIf { it.isNotEmpty() }
-                            ?.let { setArtworkUri(android.net.Uri.parse(it)) }
-                    }
-                    .build()
-                val item = MediaItem.Builder().setUri(url).setMediaMetadata(metadata).build()
-                player?.apply { setMediaItem(item); prepare(); play() }
-            }
-        }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {

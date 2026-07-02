@@ -15,27 +15,25 @@ error() { echo -e "${RED}[✗]${NC} $*"; exit 1; }
 
 echo ""
 echo -e "${CYAN}══════════════════════════════════════${NC}"
-echo -e "${CYAN}   Instalación de Aurita Server       ${NC}"
+echo -e "${CYAN}   Instalación de Aurita Server v2      ${NC}"
 echo -e "${CYAN}══════════════════════════════════════${NC}"
 echo ""
 
-# ── Dos únicas preguntas al admin ────────────────────────────
-ask "¿URL interna de Jellyfin? (Enter para http://localhost:8096)"
+# ── Configuración ────────────────────────────────────────────
+ask "¿URL interna de Jellyfin? (ej: http://192.168.1.10:8096)"
+echo "  (Enter para http://localhost:8096 — solo si Jellyfin está en el mismo servidor)"
 read -r JELLYFIN_URL
 JELLYFIN_URL="${JELLYFIN_URL:-http://localhost:8096}"
-
-ask "¿URL externa de Jellyfin? (la que usan los usuarios, ej: https://jellyfin.tudominio.com)"
-read -r JELLYFIN_EXTERNAL_URL
-[[ -z "$JELLYFIN_EXTERNAL_URL" ]] && error "La URL externa de Jellyfin es obligatoria."
 
 ask "¿Puerto para Aurita Server? (Enter para 3000)"
 read -r PORT
 PORT="${PORT:-3000}"
 
 echo ""
-info "Jellyfin interno:  $JELLYFIN_URL"
-info "Jellyfin externo:  $JELLYFIN_EXTERNAL_URL"
-info "Puerto:            $PORT"
+info "Jellyfin:  $JELLYFIN_URL"
+info "Puerto:    $PORT"
+echo "  Proxy de audio con caché activado"
+echo "  Todas las peticiones pasan por Aurita"
 echo ""
 
 # ── Node.js 20 LTS ───────────────────────────────────────────
@@ -71,6 +69,7 @@ info "Dependencias instaladas"
 
 # ── Directorios de caché ──────────────────────────────────────
 mkdir -p "$INSTALL_DIR/cache/images"
+mkdir -p "$INSTALL_DIR/cache/audio"
 info "Directorios de caché creados"
 
 # ── Permisos ──────────────────────────────────────────────────
@@ -98,9 +97,6 @@ SyslogIdentifier=aurita-server
 Environment=NODE_ENV=production
 Environment=PORT=${PORT}
 Environment=JELLYFIN_URL=${JELLYFIN_URL}
-Environment=JELLYFIN_EXTERNAL_URL=${JELLYFIN_EXTERNAL_URL}
-# Sync cada 5 minutos (cambiar si se desea otro intervalo)
-# Environment=SYNC_INTERVAL_MINUTES=5
 
 EOF
 
@@ -130,11 +126,12 @@ echo -e "${GREEN}═════════════════════
 echo ""
 echo "  Siguiente paso:"
 echo "  → Añade en tu Caddy: aurita.tudominio.com → localhost:${PORT}"
-echo "  → Abre Aurita, selecciona 'Aurita Server'"
-echo "  → Escribe https://aurita.tudominio.com y tus credenciales de Jellyfin"
-echo "  → La primera vez que entres, el servidor sincroniza tu biblioteca solo"
+echo "  → Abre Aurita e inicia sesión con la URL de Aurita Server"
+echo "  → La primera vez, el servidor sincroniza tu biblioteca sola"
+echo "  → Las canciones se aceleran tras la primera reproducción (caché)"
 echo ""
 echo "  Gestión del servicio:"
 echo "    sudo systemctl status aurita-server"
 echo "    sudo journalctl -u aurita-server -f"
+echo "    sudo systemctl restart aurita-server   (mantiene la caché de audio)"
 echo ""

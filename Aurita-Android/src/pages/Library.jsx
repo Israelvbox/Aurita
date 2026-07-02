@@ -55,9 +55,11 @@ export function Library() {
     e.stopPropagation();
     if (!confirm(`¿Borrar "${name}"?`)) return;
     await jellyfin.deletePlaylist(id);
-    onPlaylistDeleted(id); // invalida Home + Library + detail de esa playlist
-    setPlaylists((p) => p.filter((x) => x.Id !== id));
-    _playlistsCache = _playlistsCache.filter((x) => x.Id !== id);
+    onPlaylistDeleted(id);
+    _playlistsCache = [];
+    setPlaylists([]);
+    setLoading(true);
+    await load();
   }
 
   return (

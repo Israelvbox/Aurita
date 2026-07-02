@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { ListPlus, Check, Plus } from 'lucide-react';
 import { jellyfin } from '../api/jellyfin.js';
 import { service } from '../api/service.js';
+import { invalidateDetail } from '../api/detailCache.js';
+import { onPlaylistCreated } from '../api/cacheManager.js';
 
 export default function AddToPlaylistModal({ track, onClose, onChanged }) {
   const [playlists, setPlaylists] = useState([]);
@@ -56,6 +58,8 @@ export default function AddToPlaylistModal({ track, onClose, onChanged }) {
       await jellyfin.addToPlaylist(playlistId, [track.Id]);
       setContaining((prev) => new Set(prev).add(playlistId));
       setChanged(true);
+      invalidateDetail(playlistId);
+      onPlaylistCreated();
     } catch (err) {
       setError(err.message || 'No se pudo añadir la canción.');
     } finally {

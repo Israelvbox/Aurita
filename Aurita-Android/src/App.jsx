@@ -10,7 +10,7 @@ import { service } from './api/service.js';
 import { setHomeCache } from './pages/Home.jsx';
 import { startSyncPolling, stopSyncPolling, onAppResumed } from './api/cacheManager.js';
 import { pruneExpired } from './api/imageCache.js';
-import { sendCatalogToNative } from './api/androidAuto.js';
+import { sendCatalogToNative, requestBluetoothPermission } from './api/androidAuto.js';
 import Login from './pages/Login.jsx';
 import Layout from './components/Layout.jsx';
 import Home from './pages/Home.jsx';
@@ -37,6 +37,7 @@ export default function App() {
 
   useEffect(() => {
     LocalNotifications.requestPermissions().catch(() => {});
+    requestBluetoothPermission();
   }, []);
 
   useEffect(() => {

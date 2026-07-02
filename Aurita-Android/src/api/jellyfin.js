@@ -3,12 +3,6 @@ import { secureStore } from '../db/storage.js';
 const DEVICE_NAME  = 'Aurita';
 const APP_VERSION  = '0.1.0';
 
-// Cada instalación de Aurita necesita su propio DeviceId único — Jellyfin
-// identifica y gestiona sesiones por dispositivo. Antes usábamos una
-// constante fija ('aurita-client') igual para TODAS las instalaciones del
-// mundo, lo cual hacía que Jellyfin viera a usuarios distintos como "el
-// mismo dispositivo" reconectándose, invalidando sesiones ajenas sin
-// avisar (401 espontáneos). Se genera una vez y se guarda en secureStore.
 let _deviceId = null;
 
 async function getDeviceId() {
@@ -22,9 +16,6 @@ async function getDeviceId() {
   return stored;
 }
 
-// Campos estándar que necesitamos en todas las consultas de canciones.
-// Definirlos en un solo lugar facilita la futura migración al servicio
-// intermediario: solo habrá que cambiar esta constante.
 const AUDIO_FIELDS = 'Genres,AlbumArtist,ArtistItems,UserData,RunTimeTicks';
 
 function authHeader({ token, userId, deviceId } = {}) {
@@ -35,38 +26,32 @@ function authHeader({ token, userId, deviceId } = {}) {
 
 export class JellyfinClient {
   constructor() {
-    this.baseUrl        = null;  // URL que el usuario escribió (servicio o Jellyfin directo)
-    this.jellyfinUrl    = null;  // URL real de Jellyfin para audio/imágenes (enviada por el servicio tras auth)
-    this.token          = null;
-    this.userId         = null;
-    this.deviceId       = null;
-    this.connectionMode = 'direct'; // 'direct' | 'service'
+    this.baseUrl  = null;
+    this.token    = null;
+    this.userId   = null;
+    this.deviceId = null;
   }
 
   /* ---------- Sesión ---------- */
 
   async restoreSession() {
-    const [baseUrl, token, userId, mode, jellyfinUrl, deviceId] = await Promise.all([
+    const [baseUrl, token, userId, deviceId] = await Promise.all([
       secureStore.get('jf_baseUrl'),
       secureStore.get('jf_token'),
       secureStore.get('jf_userId'),
-      secureStore.get('jf_mode'),
-      secureStore.get('jf_jellyfinUrl'),
       getDeviceId(),
     ]);
     if (baseUrl && token && userId) {
-      this.baseUrl        = baseUrl;
-      this.token          = token;
-      this.userId         = userId;
-      this.connectionMode = mode || 'direct';
-      this.jellyfinUrl    = jellyfinUrl || baseUrl;
-      this.deviceId       = deviceId;
+      this.baseUrl  = baseUrl;
+      this.token    = token;
+      this.userId   = userId;
+      this.deviceId = deviceId;
       return true;
     }
     return false;
   }
 
-  async login(serverUrl, username, password, mode = 'direct') {
+  async login(serverUrl, username, password) {
     const baseUrl = serverUrl.replace(/\/+$/, '');
     const deviceId = await getDeviceId();
     const res = await fetch(`${baseUrl}/Users/AuthenticateByName`, {
@@ -84,38 +69,27 @@ export class JellyfinClient {
     }
 
     const data = await res.json();
-    this.baseUrl        = baseUrl;
-    this.token          = data.AccessToken;
-    this.userId         = data.User.Id;
-    this.deviceId        = deviceId;
-    this.connectionMode = mode;
-    // Si el servidor es el intermediario, devuelve la URL real de Jellyfin
-    // para audio e imágenes. En modo directo, es la misma baseUrl.
-    this.jellyfinUrl    = data.AuritaJellyfinUrl || baseUrl;
+    this.baseUrl  = baseUrl;
+    this.token    = data.AccessToken;
+    this.userId   = data.User.Id;
+    this.deviceId = deviceId;
 
     await Promise.all([
-      secureStore.set('jf_baseUrl',     baseUrl),
-      secureStore.set('jf_token',       this.token),
-      secureStore.set('jf_userId',      this.userId),
-      secureStore.set('jf_mode',        mode),
-      secureStore.set('jf_jellyfinUrl', this.jellyfinUrl),
+      secureStore.set('jf_baseUrl', baseUrl),
+      secureStore.set('jf_token',   this.token),
+      secureStore.set('jf_userId',  this.userId),
     ]);
 
     return data.User;
   }
 
   async logout() {
-    // El deviceId identifica esta instalación, no esta sesión — lo
-    // preservamos para que Jellyfin no vea un "dispositivo nuevo" cada vez
-    // que alguien cierra sesión y vuelve a entrar.
     const deviceId = await getDeviceId();
     await secureStore.clear();
     await secureStore.set('jf_deviceId', deviceId);
-    this.baseUrl        = null;
-    this.jellyfinUrl    = null;
-    this.token          = null;
-    this.userId         = null;
-    this.connectionMode = 'direct';
+    this.baseUrl  = null;
+    this.token    = null;
+    this.userId   = null;
   }
 
   get isAuthenticated() {
@@ -126,12 +100,7 @@ export class JellyfinClient {
 
   async request(path, { method = 'GET', body, query } = {}) {
     if (!this.isAuthenticated) throw new Error('No autenticado');
-    // IMPORTANTE: usamos jellyfinUrl (URL real de Jellyfin) para todas las
-    // llamadas directas. En modo directo jellyfinUrl === baseUrl. En modo
-    // servicio, baseUrl = URL del intermediario y jellyfinUrl = Jellyfin real,
-    // así las mutaciones (favoritos, playlists, etc.) llegan al sitio correcto.
-    const base = this.jellyfinUrl || this.baseUrl;
-    const url = new URL(`${base}${path}`);
+    const url = new URL(`${this.baseUrl}${path}`);
     if (query) {
       for (const [k, v] of Object.entries(query)) {
         if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
@@ -148,7 +117,7 @@ export class JellyfinClient {
     });
     if (!res.ok) {
       if (res.status === 401) window.dispatchEvent(new CustomEvent('aurita:unauthorized'));
-      throw new Error(`Jellyfin ${method} ${path}: HTTP ${res.status}`);
+      throw new Error(`Aurita ${method} ${path}: HTTP ${res.status}`);
     }
     if (res.status === 204) return null;
     const text = await res.text();
@@ -159,16 +128,12 @@ export class JellyfinClient {
 
   imageUrl(itemId, type = 'Primary', maxSize = 300, tag = null) {
     if (!itemId) return null;
-    // Las imágenes van siempre directo a Jellyfin, no al intermediario
-    const base = this.jellyfinUrl || this.baseUrl;
     const tagParam = tag ? `&tag=${encodeURIComponent(tag)}` : '';
-    return `${base}/Items/${itemId}/Images/${type}?maxWidth=${maxSize}&maxHeight=${maxSize}&quality=85${tagParam}`;
+    return `${this.baseUrl}/images/${itemId}/${type}?maxWidth=${maxSize}&maxHeight=${maxSize}&quality=85${tagParam}`;
   }
 
   streamUrl(itemId) {
-    // El audio siempre directo a Jellyfin: evita latencia del intermediario
-    const base = this.jellyfinUrl || this.baseUrl;
-    return `${base}/Audio/${itemId}/universal?UserId=${this.userId}&DeviceId=${this.deviceId}&api_key=${this.token}&Container=opus,mp3,aac,m4a,flac&TranscodingContainer=aac&AudioCodec=aac&MaxStreamingBitrate=320000`;
+    return `${this.baseUrl}/audio/${itemId}/stream.mp3?UserId=${this.userId}&DeviceId=${this.deviceId}&api_key=${this.token}&Static=true`;
   }
 
   /* ---------- Consultas ---------- */
@@ -187,8 +152,37 @@ export class JellyfinClient {
   }
 
   getGenres() {
-    return this.request('/MusicGenres', {
-      query: { UserId: this.userId, SortBy: 'SortName' },
+    return this.request(`/Users/${this.userId}/Items`, {
+      query: {
+        IncludeItemTypes: 'MusicGenre',
+        Recursive: true,
+        SortBy: 'SortName',
+      },
+    });
+  }
+
+  getPopularArtists(limit = 50) {
+    return this.request(`/Users/${this.userId}/Items`, {
+      query: {
+        IncludeItemTypes: 'MusicArtist',
+        Recursive: true,
+        SortBy: 'CommunityRating',
+        SortOrder: 'Descending',
+        Limit: limit,
+        Fields: 'PrimaryImageAspectRatio,SortName',
+        ImageTypeLimit: 1,
+      },
+    });
+  }
+
+  getPlaylists() {
+    return this.request(`/Users/${this.userId}/Items`, {
+      query: {
+        IncludeItemTypes: 'Playlist',
+        Recursive: true,
+        SortBy: 'SortName',
+        Fields: 'PrimaryImageAspectRatio,SortName',
+      },
     });
   }
 
@@ -199,67 +193,48 @@ export class JellyfinClient {
         IncludeItemTypes: 'Audio,MusicArtist',
         Recursive: true,
         Limit: limit,
-        Fields: `${AUDIO_FIELDS},ProductionYear`,
+        Fields: AUDIO_FIELDS,
+      },
+    });
+  }
+
+  getInstantMix(itemId, limit = 20) {
+    return this.request(`/Items/${itemId}/InstantMix`, {
+      query: {
+        UserId: this.userId,
+        Limit: limit,
+        Fields: AUDIO_FIELDS,
+      },
+    });
+  }
+
+  getUserViews() {
+    return this.request(`/Users/${this.userId}/Items`, {
+      query: {
+        IncludeItemTypes: 'CollectionFolder',
+        SortBy: 'SortName',
+        Recursive: true,
+      },
+    });
+  }
+
+  getAlbumItems(albumId) {
+    return this.request(`/Users/${this.userId}/Items`, {
+      query: {
+        ParentId: albumId,
+        IncludeItemTypes: 'Audio',
+        SortBy: 'SortName',
+        Recursive: true,
+        Fields: AUDIO_FIELDS,
       },
     });
   }
 
   getPlaylistItems(playlistId) {
     return this.request(`/Playlists/${playlistId}/Items`, {
-      query: { UserId: this.userId, Fields: AUDIO_FIELDS },
-    });
-  }
-
-  getAlbumItems(albumId) {
-    return this.request(`/Users/${this.userId}/Items`, {
-      query: { ParentId: albumId, SortBy: 'IndexNumber', Fields: AUDIO_FIELDS },
-    });
-  }
-
-  getInstantMix(itemId, limit = 20) {
-    return this.request(`/Items/${itemId}/InstantMix`, {
-      query: { UserId: this.userId, Limit: limit, Fields: AUDIO_FIELDS },
-    });
-  }
-
-  // Usado por el motor de mixes para buscar canciones de un género concreto
-  // a partir de su nombre de texto (el historial local solo guarda el nombre).
-  getItemsByGenre(genre, limit = 50) {
-    return this.request(`/Users/${this.userId}/Items`, {
       query: {
-        IncludeItemTypes: 'Audio',
-        Genres: genre,
-        Recursive: true,
-        Limit: limit,
-        SortBy: 'CommunityRating,Random',
-        SortOrder: 'Descending',
+        UserId: this.userId,
         Fields: AUDIO_FIELDS,
-      },
-    });
-  }
-
-  // Descarga toda la biblioteca de audio para construir el índice de géneros
-  // en el cliente (cuando el servidor no filtra bien por GenreIds/Genres).
-  getAllAudio(limit = 5000) {
-    return this.request(`/Users/${this.userId}/Items`, {
-      query: {
-        IncludeItemTypes: 'Audio',
-        Recursive: true,
-        Limit: limit,
-        Fields: AUDIO_FIELDS,
-      },
-    });
-  }
-
-  // Géneros de álbumes: muchas bibliotecas etiquetan el género a nivel de
-  // álbum en vez de en cada pista individual; esto lo usamos para heredar.
-  getAllAlbumsGenres(limit = 3000) {
-    return this.request(`/Users/${this.userId}/Items`, {
-      query: {
-        IncludeItemTypes: 'MusicAlbum',
-        Recursive: true,
-        Limit: limit,
-        Fields: 'Genres',
       },
     });
   }
@@ -268,16 +243,66 @@ export class JellyfinClient {
     return this.request(`/Users/${this.userId}/Items/${itemId}`);
   }
 
+  getFavoriteSongs(limit = 500) {
+    return this.request(`/Users/${this.userId}/Items`, {
+      query: {
+        Filters: 'IsFavorite',
+        IncludeItemTypes: 'Audio',
+        Recursive: true,
+        SortBy: 'SortName',
+        Limit: limit,
+        Fields: AUDIO_FIELDS,
+      },
+    });
+  }
+
+  getAllAudio(limit = 5000) {
+    return this.request(`/Users/${this.userId}/Items`, {
+      query: {
+        IncludeItemTypes: 'Audio',
+        Recursive: true,
+        SortBy: 'SortName',
+        Limit: limit,
+        Fields: AUDIO_FIELDS,
+      },
+    });
+  }
+
+  getAllAlbumsGenres(limit = 3000) {
+    return this.request(`/Users/${this.userId}/Items`, {
+      query: {
+        IncludeItemTypes: 'MusicAlbum,MusicGenre',
+        Recursive: true,
+        SortBy: 'SortName',
+        Limit: limit,
+        Fields: 'Genres,AlbumArtist,ArtistItems,PrimaryImageAspectRatio',
+      },
+    });
+  }
+
+  getItemsByGenre(genre, limit = 50) {
+    return this.request(`/Users/${this.userId}/Items`, {
+      query: {
+        IncludeItemTypes: 'Audio',
+        Recursive: true,
+        SortBy: 'SortName',
+        Limit: limit,
+        GenreIds: genre,
+        Fields: AUDIO_FIELDS,
+      },
+    });
+  }
+
   getArtistAlbums(artistId, limit = 30) {
     return this.request(`/Users/${this.userId}/Items`, {
       query: {
         IncludeItemTypes: 'MusicAlbum',
-        ArtistIds: artistId,
         Recursive: true,
-        Limit: limit,
-        SortBy: 'ProductionYear',
+        SortBy: 'ProductionYear,SortName',
         SortOrder: 'Descending',
-        Fields: `${AUDIO_FIELDS},ProductionYear`,
+        Limit: limit,
+        ArtistIds: artistId,
+        Fields: 'PrimaryImageAspectRatio,ProductionYear',
       },
     });
   }
@@ -286,42 +311,31 @@ export class JellyfinClient {
     return this.request(`/Users/${this.userId}/Items`, {
       query: {
         IncludeItemTypes: 'Audio',
-        ArtistIds: artistId,
         Recursive: true,
-        Limit: limit,
-        SortBy: 'CommunityRating,PlayCount',
+        SortBy: 'CommunityRating',
         SortOrder: 'Descending',
-        Fields: AUDIO_FIELDS,
-      },
-    });
-  }
-
-  getFavoriteSongs(limit = 500) {
-    return this.request(`/Users/${this.userId}/Items`, {
-      query: {
-        IncludeItemTypes: 'Audio',
-        Filters: 'IsFavorite',
-        Recursive: true,
         Limit: limit,
+        ArtistIds: artistId,
         Fields: AUDIO_FIELDS,
       },
     });
   }
 
-  getUserPlaylists() {
-    return this.request(`/Users/${this.userId}/Items`, {
-      query: { IncludeItemTypes: 'Playlist', Recursive: true, Limit: 100 },
-    });
+  async markPlayed(itemId) {
+    await this.request(`/Users/${this.userId}/PlayedItems/${itemId}`, { method: 'POST' });
   }
 
-  setFavorite(itemId, isFavorite) {
-    return this.request(`/Users/${this.userId}/FavoriteItems/${itemId}`, {
-      method: isFavorite ? 'POST' : 'DELETE',
-    });
+  async addFavorite(itemId) {
+    await this.request(`/Users/${this.userId}/FavoriteItems/${itemId}`, { method: 'POST' });
   }
 
-  markPlayed(itemId) {
-    return this.request(`/Users/${this.userId}/PlayedItems/${itemId}`, { method: 'POST' });
+  async removeFavorite(itemId) {
+    await this.request(`/Users/${this.userId}/FavoriteItems/${itemId}`, { method: 'DELETE' });
+  }
+
+  async setFavorite(itemId, isFavorite) {
+    if (isFavorite) return this.addFavorite(itemId);
+    return this.removeFavorite(itemId);
   }
 
   /* ---------- Playlists ---------- */
@@ -345,19 +359,19 @@ export class JellyfinClient {
     const ids = (itemsRes.Items || []).map((i) => i.Id);
     return this.request(`/Playlists/${playlistId}`, {
       method: 'POST',
-      body: { Name: newName, Ids: ids, Users: [], IsPublic: false },
+      body: { Name: newName, Ids: ids, IsPublic: false, Users: [] },
     });
   }
-
 
   deletePlaylist(playlistId) {
     return this.request(`/Items/${playlistId}`, { method: 'DELETE' });
   }
 
   addToPlaylist(playlistId, itemIds) {
-    return this.request(`/Playlists/${playlistId}/Items`, {
+    const idsStr = itemIds.map(id => `Ids=${encodeURIComponent(id)}`).join('&');
+    return this.request(`/Playlists/${playlistId}/Items?${idsStr}`, {
       method: 'POST',
-      query: { Ids: itemIds.join(','), UserId: this.userId },
+      query: { UserId: this.userId },
     });
   }
 
