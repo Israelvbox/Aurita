@@ -1,0 +1,64 @@
+{
+  "name": "aurita",
+  "version": "0.1.0",
+  "description": "Reproductor de m\u00fasica para Jellyfin, r\u00e1pido y minimalista",
+  "main": "electron/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
+    "electron:build": "vite build && electron-builder",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "lucide-react": "0.469.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "6.26.2",
+    "zustand": "4.5.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "4.3.4",
+    "concurrently": "9.0.1",
+    "electron": "31.4.0",
+    "electron-builder": "25.0.5",
+    "vite": "5.4.11",
+    "wait-on": "8.0.0"
+  },
+  "build": {
+    "appId": "com.aurita.app",
+    "productName": "Aurita",
+    "icon": "build/icon.png",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "build/icon.png"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Audio",
+      "icon": "build/icon.png",
+      "maintainer": "Aurita <aurita@localhost>",
+      "desktop": {
+        "StartupWMClass": "Aurita"
+      }
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.png"
+    }
+  },
+  "author": {
+    "name": "Aurita",
+    "email": "aurita@localhost"
+  },
+  "homepage": "https://github.com/aurita/aurita"
+}

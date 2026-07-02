@@ -1,0 +1,6 @@
+{
+  "appId": "com.aurita.app",
+  "appName": "Aurita",
+  "webDir": "dist",
+  "server": { "androidScheme": "https" }
+}

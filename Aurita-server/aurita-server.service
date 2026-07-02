@@ -1,0 +1,29 @@
+[Unit]
+Description=Aurita Server — Intermediario Jellyfin
+Documentation=https://github.com/aurita/aurita-server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aurita
+Group=aurita
+WorkingDirectory=/opt/aurita-server
+ExecStart=/usr/bin/node /opt/aurita-server/server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aurita-server
+
+# Seguridad básica
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Variables de entorno (editar si se necesita otro puerto o intervalo)
+Environment=NODE_ENV=production
+# Environment=PORT=3000
+# Environment=SYNC_INTERVAL_MINUTES=5
+
+[Install]
+WantedBy=multi-user.target

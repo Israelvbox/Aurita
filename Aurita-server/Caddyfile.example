@@ -1,0 +1,26 @@
+# ============================================================
+#  Caddyfile — añade este bloque a tu Caddyfile existente
+#  (en la VM de Caddy que ya tienes con Jellyfin)
+# ============================================================
+
+aurita.TUDOMINIO.com {
+    # Proxy al servidor Aurita en el host donde corre Jellyfin.
+    # Cambia JELLYFIN_SERVER_IP por la IP del servidor Debian.
+    reverse_proxy JELLYFIN_SERVER_IP:3000
+
+    # Cabeceras de seguridad
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+    }
+
+    # Logs (opcional)
+    log {
+        output file /var/log/caddy/aurita.log
+    }
+}
+
+# Si Jellyfin ya tienes algo así, no lo toques:
+# jellyfin.TUDOMINIO.com {
+#     reverse_proxy JELLYFIN_SERVER_IP:8096
+# }
