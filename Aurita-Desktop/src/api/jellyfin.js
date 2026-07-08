@@ -59,7 +59,7 @@ export class JellyfinClient {
       this.token          = token;
       this.userId         = userId;
       this.connectionMode = mode || 'direct';
-      this.jellyfinUrl    = jellyfinUrl || baseUrl;
+      this.jellyfinUrl    = this.connectionMode === 'service' ? baseUrl : (jellyfinUrl || baseUrl);
       this.deviceId       = deviceId;
       return true;
     }
@@ -89,9 +89,7 @@ export class JellyfinClient {
     this.userId         = data.User.Id;
     this.deviceId        = deviceId;
     this.connectionMode = mode;
-    // Si el servidor es el intermediario, devuelve la URL real de Jellyfin
-    // para audio e imágenes. En modo directo, es la misma baseUrl.
-    this.jellyfinUrl    = data.AuritaJellyfinUrl || baseUrl;
+    this.jellyfinUrl    = mode === 'service' ? baseUrl : (data.AuritaJellyfinUrl || baseUrl);
 
     await Promise.all([
       secureStore.set('jf_baseUrl',     baseUrl),
@@ -126,11 +124,7 @@ export class JellyfinClient {
 
   async request(path, { method = 'GET', body, query } = {}) {
     if (!this.isAuthenticated) throw new Error('No autenticado');
-    // IMPORTANTE: usamos jellyfinUrl (URL real de Jellyfin) para todas las
-    // llamadas directas. En modo directo jellyfinUrl === baseUrl. En modo
-    // servicio, baseUrl = URL del intermediario y jellyfinUrl = Jellyfin real,
-    // así las mutaciones (favoritos, playlists, etc.) llegan al sitio correcto.
-    const base = this.jellyfinUrl || this.baseUrl;
+    const base = this.connectionMode === 'service' ? this.baseUrl : (this.jellyfinUrl || this.baseUrl);
     const url = new URL(`${base}${path}`);
     if (query) {
       for (const [k, v] of Object.entries(query)) {
@@ -143,6 +137,8 @@ export class JellyfinClient {
         'Content-Type': 'application/json',
         'X-Emby-Authorization': authHeader({ token: this.token, userId: this.userId, deviceId: this.deviceId }),
         'X-Emby-Token': this.token,
+        'X-Jellyfin-Token':  this.token,
+        'X-Jellyfin-UserId': this.userId,
       },
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -170,7 +166,9 @@ export class JellyfinClient {
   }
 
   streamUrl(itemId) {
-    // El audio siempre directo a Jellyfin: evita latencia del intermediario
+    if (this.connectionMode === 'service') {
+      return `${this.baseUrl}/audio/${itemId}/stream.mp3?api_key=${this.token}`;
+    }
     const base = this.jellyfinUrl || this.baseUrl;
     return `${base}/Audio/${itemId}/universal?UserId=${this.userId}&DeviceId=${this.deviceId}&api_key=${this.token}&Container=opus,mp3,aac,m4a,flac&TranscodingContainer=aac&AudioCodec=aac&MaxStreamingBitrate=320000`;
   }
