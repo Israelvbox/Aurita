@@ -32,8 +32,8 @@ App Android nativa (Capacitor + React con plugins Kotlin). Misma lógica que el 
 
 | | | |
 |---|---|---|
-| ![Inicio](Aurita-Android/images/Inicio.png) | ![Biblioteca](Aurita-Android/images/Biblioteca.png) | ![Buscador](Aurita-Android/images/Buscador.png) |
-| ![Playlist](Aurita-Android/images/Playlist.png) | ![Like](Aurita-Android/images/Like.png) | |
+| ![Inicio](image/Inicio.png) | ![Biblioteca](image/Biblioteca.png) | ![Buscador](image/Buscador.png) |
+| ![Playlist](image/Playlist.png) | ![Like](image/Like.png) | |
 
 **Motor de audio (ExoPlayer Media3):**
 - Reproducción gapless, audio focus, Bluetooth A2DP
