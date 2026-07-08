@@ -101,7 +101,7 @@ npm run cap:sync
 npm run cap:open     # Abre Android Studio
 ```
 
-### Servidor (opcional)
+### Servidor
 
 ```bash
 cd aurita-server
@@ -112,6 +112,23 @@ node server.js
 ```
 
 ---
+
+## Preview
+### Inicio
+<img src="https://github.com/Israelvbox/Aurita/blob/main/image/Inicio.png">
+
+### Buscador
+<img src="https://github.com/Israelvbox/Aurita/blob/main/image/Buscador.png">
+
+### Biblioteca
+<img src="https://github.com/Israelvbox/Aurita/blob/main/image/Biblioteca.png">
+
+### Playlist
+<img src="https://github.com/Israelvbox/Aurita/blob/main/image/Playlist.png">
+
+### Like
+<img src="https://github.com/Israelvbox/Aurita/blob/main/image/Like.png">
+
 
 ## Licencia
 
