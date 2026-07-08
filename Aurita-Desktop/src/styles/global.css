@@ -96,37 +96,6 @@ input[type='range'] { -webkit-appearance: none; appearance: none; background: tr
   font-weight: 800;
 }
 
-/* Selector de modo de conexión */
-.login-mode {
-  display: flex;
-  gap: .5rem;
-  margin-bottom: .5rem;
-}
-.login-mode__btn {
-  flex: 1;
-  padding: .6rem;
-  border-radius: var(--radius);
-  border: 1px solid #3a3a3a;
-  background: #232323; /* gris neutro puro, sin tinte morado, para distinguirse claramente del activo */
-  color: #9a9a9a;
-  font-size: .82rem;
-  font-weight: 600;
-  transition: all .15s;
-}
-.login-mode__btn:hover { border-color: var(--accent); color: var(--text); }
-.login-mode__btn--active {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #16091f;
-  box-shadow: 0 2px 12px var(--accent-soft);
-}
-.login-mode__hint {
-  text-align: center;
-  font-size: .78rem;
-  color: var(--text-muted);
-  margin: 0 0 1rem;
-  min-height: 1.1rem;
-}
 .login-card label { display: block; margin-bottom: 1rem; font-size: .85rem; color: var(--text-muted); }
 .login-card input {
   display: block; width: 100%; margin-top: .35rem;
