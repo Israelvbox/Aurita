@@ -30,6 +30,11 @@ App web + Electron para Linux y Windows. Se conecta directamente a Jellyfin.
 
 App Android nativa (Capacitor + React con plugins Kotlin). Misma lógica que el escritorio pero con motor de audio nativo.
 
+| | | |
+|---|---|---|
+| ![Inicio](Aurita-Android/images/Inicio.png) | ![Biblioteca](Aurita-Android/images/Biblioteca.png) | ![Buscador](Aurita-Android/images/Buscador.png) |
+| ![Playlist](Aurita-Android/images/Playlist.png) | ![Like](Aurita-Android/images/Like.png) | |
+
 **Motor de audio (ExoPlayer Media3):**
 - Reproducción gapless, audio focus, Bluetooth A2DP
 - **Android Auto** navegable (artistas, álbumes, playlists, géneros) vía `MediaLibraryService`
