@@ -7,6 +7,7 @@ import { getWeeklyMixes, getRecommendedPlaylists } from '../store/mixEngine.js';
 import { registerInvalidator } from '../api/cacheManager.js';
 import Row from '../components/Row.jsx';
 import logo from '../assets/logo.png';
+import { cacheStore } from '../db/storage.js';
 
 // TTL reducido a 5 minutos: si el usuario crea una playlist,
 // la verá en Home en menos de 5min sin tener que salir y volver.
@@ -43,6 +44,12 @@ export default function Home() {
       homeCache.playlists = res.Items || [];
       homeCache.fetchedAt = Date.now();
       setPlaylists({ items: homeCache.playlists, loading: false });
+    }).catch(async () => {
+      if (cancelled) return;
+      const offlineList = await cacheStore.get('offline_playlist', 'list') || [];
+      if (offlineList.length > 0) {
+        setPlaylists({ items: offlineList, loading: false });
+      }
     });
     getWeeklyMixes().then((w) => {
       if (cancelled) return;

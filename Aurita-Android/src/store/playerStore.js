@@ -7,7 +7,7 @@ import { getEffectiveGenres } from '../api/genreIndex.js';
 
 const AuritaPlayer = registerPlugin('AuritaPlayer');
 
-const AUTOFILL_THRESHOLD = 0.85;
+const AUTOFILL_THRESHOLD = 0.70;
 const MAX_PRELOADED = 200;
 const QUEUE_SAVE_KEY = 'player_queue';
 
@@ -33,21 +33,48 @@ function warmUpcoming(queue, currentIndex) {
   warmTrack(queue[currentIndex + 1]?.Id);
   warmTrack(queue[currentIndex + 2]?.Id);
   warmTrack(queue[currentIndex + 3]?.Id);
+  warmTrack(queue[currentIndex + 4]?.Id);
+  warmTrack(queue[currentIndex + 5]?.Id);
 }
 
 export function warmFirstTracks(items, count = 3) {
   (items || []).slice(0, count).forEach((item) => warmTrack(item?.Id));
 }
 
-function serializeTracks(queue) {
-  return queue.map((item) => ({
-    url: jellyfin.streamUrl(item.Id),
-    title: item.Name,
-    artist: item.AlbumArtist || (item.Artists || [])[0] || '',
-    album: item.Album || '',
-    artworkUrl: jellyfin.imageUrl(item.AlbumId || item.Id, 'Primary', 512),
-    duration: item.RunTimeTicks ? Math.round(item.RunTimeTicks / 10_000_000) : 0,
-  }));
+const offlineUrlCache = new Map();
+
+async function resolveStreamUrl(item) {
+  if (!item) return '';
+  const id = item.Id;
+  const cached = offlineUrlCache.get(id);
+  if (cached) return cached;
+  try {
+    const result = await AuritaPlayer.isDownloaded({ itemId: id });
+    if (result.downloaded && result.path) {
+      const fileUrl = result.path.startsWith('file://') ? result.path : 'file://' + result.path;
+      offlineUrlCache.set(id, fileUrl);
+      return fileUrl;
+    }
+  } catch {}
+  const url = jellyfin.streamUrl(id);
+  offlineUrlCache.set(id, url);
+  return url;
+}
+
+async function serializeTracks(queue) {
+  const results = [];
+  for (const item of queue) {
+    const url = await resolveStreamUrl(item);
+    results.push({
+      url,
+      title: item.Name,
+      artist: item.AlbumArtist || (item.Artists || [])[0] || '',
+      album: item.Album || '',
+      artworkUrl: jellyfin.imageUrl(item.AlbumId || item.Id, 'Primary', 512),
+      duration: item.RunTimeTicks ? Math.round(item.RunTimeTicks / 10_000_000) : 0,
+    });
+  }
+  return results;
 }
 
 function persistQueue(state) {
@@ -62,26 +89,39 @@ function persistQueue(state) {
   }, 24 * 60 * 60 * 1000).catch(() => {});
 }
 
+function getNextIndex(queue, currentIndex, shuffle, repeatMode) {
+  if (queue.length === 0) return -1;
+  if (repeatMode === 'one') return currentIndex;
+  if (shuffle) {
+    const candidates = queue.map((_, i) => i).filter(i => i !== currentIndex);
+    if (candidates.length === 0) return repeatMode === 'all' ? currentIndex : -1;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  }
+  const next = currentIndex + 1;
+  if (next < queue.length) return next;
+  if (repeatMode === 'all') return 0;
+  return -1;
+}
+
 export const usePlayerStore = create((set, get) => {
   let _markedPlayed = new Set();
+  let _stateEndedHandled = false;
 
   AuritaPlayer.addListener('stateChanged', (data) => {
     const prevIndex = get().currentIndex;
     const isNewTrack = data.currentIndex >= 0 && data.currentIndex !== prevIndex;
 
     const updates = { isPlaying: data.isPlaying };
-    // Tras seek, ExoPlayer arranca nuevo stream con startTimeTicks → position=0.
-    // Sumamos _seekOffset para que la barra muestre la posición real hasta que
-    // ExoPlayer reporte una posición >0.
     const offset = isNewTrack ? 0 : get()._seekOffset;
     if (data.position > 0 || get().currentTime === 0) {
       updates.currentTime = (data.position || 0) + offset;
     }
-    // Tras seek vía URL (startTimeTicks), ExoPlayer reporta duración del stream
-    // parcial (total - seekPos). No sobreescribir la duración real de RunTimeTicks.
     if (data.duration > 0 && get()._seekOffset === 0) updates.duration = data.duration;
     if (data.currentIndex >= 0) updates.currentIndex = data.currentIndex;
-    if (isNewTrack) updates._seekOffset = 0;
+    if (isNewTrack) {
+      updates._seekOffset = 0;
+      _stateEndedHandled = false;
+    }
     set(updates);
 
     const state = get();
@@ -93,22 +133,41 @@ export const usePlayerStore = create((set, get) => {
       jellyfin.markPlayed(current.Id).catch(() => {});
     }
 
-    if (data.ended) {
+    if (data.ended && !_stateEndedHandled) {
+      _stateEndedHandled = true;
       if (current && !_markedPlayed.has(current.Id)) {
         _markedPlayed.add(current.Id);
         if (_markedPlayed.size > 500) _markedPlayed = new Set([..._markedPlayed].slice(-250));
         jellyfin.markPlayed(current.Id).catch(() => {});
       }
-      // Con queue nativa, ended solo llega cuando no hay más items.
-      // JS maneja repeat/all: playItem reenvía la cola completa.
-      if (get().repeatMode === 'all') {
-        get().playItem(get().queue[0], get().queue, get().queueSource);
+
+      const { queue, currentIndex, repeatMode, shuffle, queueSource } = get();
+      const nextIdx = getNextIndex(queue, currentIndex, shuffle, repeatMode);
+
+      if (nextIdx >= 0 && nextIdx < queue.length) {
+        get().playItem(queue[nextIdx], queue, queueSource);
+      } else if (nextIdx === -1) {
+        // No hay más canciones en la cola JS — intentar autofill
+        get()._maybeAutoFill().then(() => {
+          const { queue: newQueue, currentIndex: ci } = get();
+          if (ci >= 0 && ci + 1 < newQueue.length) {
+            get().playItem(newQueue[ci + 1], newQueue, get().queueSource);
+          }
+        });
       }
     }
 
     const { duration, currentTime } = get();
     if (duration > 0 && currentTime / duration >= AUTOFILL_THRESHOLD) {
       get()._maybeAutoFill();
+    }
+
+    // Si el index nativo no coincide con el JS, sincronizar
+    if (data.currentIndex >= 0 && !data.ended) {
+      const jsIdx = get().currentIndex;
+      if (data.currentIndex !== jsIdx && data.currentIndex < get().queue.length) {
+        set({ currentIndex: data.currentIndex });
+      }
     }
   });
 
@@ -118,6 +177,15 @@ export const usePlayerStore = create((set, get) => {
 
   AuritaPlayer.addListener('prevTrack', () => get().prev());
   AuritaPlayer.addListener('nextTrack', () => get().next(true));
+
+  // Evento desde native cuando la app se reanuda (MainActivity.onResume)
+  if (typeof window !== 'undefined') {
+    window.addEventListener('app:resumed', () => {
+      if (get().currentIndex >= 0) {
+        get().restoreQueue();
+      }
+    });
+  }
 
   return {
     queue: [],
@@ -147,31 +215,39 @@ export const usePlayerStore = create((set, get) => {
         duration: savedDuration,
       });
 
-      // Sincronizar repeat/shuffle nativos
       AuritaPlayer.setRepeatMode({ mode: saved.repeatMode || 'off' }).catch(() => {});
       AuritaPlayer.setShuffle({ enabled: saved.shuffle || false }).catch(() => {});
 
-      // Sincronizar con el estado real del motor nativo
       try {
         const state = await AuritaPlayer.getState();
-        if (state.currentIndex >= 0) {
+        if (state.currentIndex >= 0 && state.mediaItemCount > 0) {
           set({ currentIndex: state.currentIndex, isPlaying: state.isPlaying, currentTime: state.position });
           if (state.duration > 0) set({ duration: state.duration });
         } else {
-          // Cola nativa vacía (ej. tras minimizar/reabrir) → re-poblar sin auto-play
           const { queue, currentIndex } = get();
           if (queue.length > 0 && currentIndex >= 0) {
+            const tracks = await serializeTracks(queue);
             AuritaPlayer.play({
-              tracks: serializeTracks(queue),
+              tracks,
               startIndex: currentIndex,
               autoPlay: false,
             }).catch(() => {});
           }
         }
-      } catch {}
+      } catch {
+        const { queue, currentIndex } = get();
+        if (queue.length > 0 && currentIndex >= 0) {
+          const tracks = await serializeTracks(queue);
+          AuritaPlayer.play({
+            tracks,
+            startIndex: currentIndex,
+            autoPlay: false,
+          }).catch(() => {});
+        }
+      }
     },
 
-    playItem(item, queue = null, source = 'other') {
+    async playItem(item, queue = null, source = 'other') {
       const newQueue = queue || [item];
       const index = newQueue.findIndex((i) => i.Id === item.Id);
       const idx = index === -1 ? 0 : index;
@@ -181,8 +257,9 @@ export const usePlayerStore = create((set, get) => {
 
       persistQueue(get());
 
+      const tracks = await serializeTracks(newQueue);
       AuritaPlayer.play({
-        tracks: serializeTracks(newQueue),
+        tracks,
         startIndex: idx,
       }).then(() => {
         AuritaPlayer.setRepeatMode({ mode: repeatMode }).catch(() => {});
@@ -207,7 +284,6 @@ export const usePlayerStore = create((set, get) => {
         await AuritaPlayer.pause().catch(() => {});
       } else {
         await AuritaPlayer.resume().catch(() => {});
-        // Tras audio focus externo (WhatsApp, llamada), sincronizar estado nativo
         try {
           const state = await AuritaPlayer.getState();
           if (state.currentIndex >= 0) {
@@ -247,23 +323,26 @@ export const usePlayerStore = create((set, get) => {
         return;
       }
 
-      // Al final de la cola: loop si repeat all, sino parar
-      if (currentIndex + 1 >= queue.length) {
-        if (repeatMode === 'all') {
-          this.playItem(queue[0], queue, get().queueSource);
-        }
+      const nextIdx = getNextIndex(queue, currentIndex, get().shuffle, repeatMode);
+      if (nextIdx < 0) return;
+
+      if (nextIdx === currentIndex && repeatMode === 'one') {
+        AuritaPlayer.seekTo({ seconds: 0 }).catch(() => {});
+        AuritaPlayer.resume().catch(() => {});
         return;
       }
 
-      AuritaPlayer.next().catch(() => {
-        const { queue, currentIndex, shuffle, repeatMode, queueSource } = get();
-        let nextIndex = shuffle ? Math.floor(Math.random() * queue.length) : currentIndex + 1;
-        if (nextIndex >= queue.length) {
-          if (repeatMode === 'all') nextIndex = 0;
-          else return;
-        }
-        get().playItem(queue[nextIndex], queue, queueSource);
-      });
+      if (nextIdx > currentIndex || repeatMode === 'all') {
+        AuritaPlayer.next().catch(async () => {
+          const { queue, currentIndex: ci, shuffle: sh, repeatMode: rm, queueSource } = get();
+          const idx = getNextIndex(queue, ci, sh, rm);
+          if (idx >= 0 && idx < queue.length) {
+            await get().playItem(queue[idx], queue, queueSource);
+          }
+        });
+      } else {
+        await get().playItem(queue[nextIdx], queue, get().queueSource);
+      }
     },
 
     prev() {
@@ -297,16 +376,15 @@ export const usePlayerStore = create((set, get) => {
     },
 
     async _maybeAutoFill() {
-      const { queue, currentIndex, autoFilling, _autoFillSourceId, repeatMode } = get();
-      if (repeatMode === 'all') return;
+      const { queue, currentIndex, autoFilling, _autoFillSourceId } = get();
       const remaining = queue.length - 1 - currentIndex;
       const current = queue[currentIndex];
-      if (!current || autoFilling || remaining > 2) return;
+      if (!current || autoFilling || remaining > 4) return;
       if (_autoFillSourceId === current.Id) return;
 
       set({ autoFilling: true, _autoFillSourceId: current.Id });
       try {
-        const res = await service.getInstantMix(current.Id, 20);
+        const res = await service.getInstantMix(current.Id, 30);
         const existingIds = new Set(queue.map((i) => i.Id));
         let fresh = (res.Items || []).filter((i) => !existingIds.has(i.Id));
 
@@ -317,14 +395,14 @@ export const usePlayerStore = create((set, get) => {
           fresh = [...related, ...unrelated];
         }
 
-        fresh = fresh.slice(0, 10);
+        fresh = fresh.slice(0, 15);
         if (fresh.length > 0) {
           set((state) => ({ queue: [...state.queue, ...fresh] }));
           warmUpcoming(get().queue, get().currentIndex);
           persistQueue(get());
 
-          // Reflejar en la cola nativa de ExoPlayer
-          AuritaPlayer.addToQueue({ tracks: serializeTracks(fresh) }).catch(() => {});
+          const tracks = await serializeTracks(fresh);
+          AuritaPlayer.addToQueue({ tracks }).catch(() => {});
         }
       } catch (err) {
         console.warn('[Aurita] No se pudo autocompletar la cola:', err);

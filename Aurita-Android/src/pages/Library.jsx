@@ -7,6 +7,7 @@ import { prefetchDetail } from '../api/detailCache.js';
 import { registerInvalidator, onPlaylistCreated, onPlaylistDeleted } from '../api/cacheManager.js';
 import CachedImage from '../components/CachedImage.jsx';
 import PlaylistFormModal from '../components/PlaylistFormModal.jsx';
+import { cacheStore } from '../db/storage.js';
 
 function normalize(s='') { return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
 
@@ -24,10 +25,19 @@ export function Library() {
 
   async function load() {
     if (_playlistsCache.length === 0) setLoading(true);
-    const res = await service.getUserPlaylists();
-    _playlistsCache = res.Items || [];
-    setPlaylists(_playlistsCache);
-    setLoading(false);
+    try {
+      const res = await service.getUserPlaylists();
+      _playlistsCache = res.Items || [];
+      setPlaylists(_playlistsCache);
+      setLoading(false);
+    } catch {
+      const offlineList = await cacheStore.get('offline_playlist', 'list') || [];
+      if (offlineList.length > 0) {
+        _playlistsCache = offlineList;
+        setPlaylists(offlineList);
+      }
+      setLoading(false);
+    }
   }
 
   useEffect(() => { load(); }, []);

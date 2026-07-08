@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, Play, Heart, Trash2, Pencil, X, Shuffle } from 'lucide-react';
+import { ArrowLeft, Play, Heart, Trash2, Pencil, X, Shuffle, Download, CheckCircle } from 'lucide-react';
+import { registerPlugin } from '@capacitor/core';
+const AuritaPlayer = registerPlugin('AuritaPlayer');
 import { jellyfin } from '../api/jellyfin.js';
 import { service } from '../api/service.js';
 import { fetchDetail, getCachedDetail, getCachedDetailSync, setDetailCache, invalidateDetail } from '../api/detailCache.js';
@@ -11,6 +13,7 @@ import { usePlaylistMembershipStore } from '../store/playlistMembershipStore.js'
 import PlaylistFormModal from '../components/PlaylistFormModal.jsx';
 import CachedImage from '../components/CachedImage.jsx';
 import { fetchCachedImage } from '../api/imageCache.js';
+import { cacheStore } from '../db/storage.js';
 
 // ── Favoritos ────────────────────────────────────────────────
 export function Favorites() {
@@ -88,6 +91,52 @@ export function PlaylistDetail() {
   const [tracks,   setTracks]   = useState(() => getCachedDetailSync(id)?.tracks ?? []);
   const [loading,  setLoading]  = useState(() => !getCachedDetailSync(id));
   const [showEdit, setShowEdit] = useState(false);
+  const [downloadedIds, setDownloadedIds] = useState(new Set());
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+
+  useEffect(() => {
+    AuritaPlayer.getDownloadedIds().then((r) => {
+      setDownloadedIds(new Set(r.ids || []));
+    }).catch(() => {});
+  }, [id]);
+
+  const allDownloaded = tracks.length > 0 && tracks.every((t) => downloadedIds.has(t.Id));
+  const someDownloaded = tracks.some((t) => downloadedIds.has(t.Id));
+
+  const handleDownloadAll = useCallback(async () => {
+    if (downloading || tracks.length === 0) return;
+    setDownloading(true);
+    setDownloadProgress(0);
+    const toDownload = tracks.filter((t) => !downloadedIds.has(t.Id));
+    let completed = 0;
+    for (const track of toDownload) {
+      try {
+        await AuritaPlayer.downloadTrack({
+          url: jellyfin.streamUrl(track.Id),
+          itemId: track.Id,
+          onProgress: false,
+        });
+        completed++;
+        setDownloadProgress(Math.round((completed / toDownload.length) * 100));
+        setDownloadedIds((prev) => new Set(prev).add(track.Id));
+      } catch (err) {
+        console.warn('[Aurita] Error descargando', track.Name, err);
+      }
+    }
+    setDownloading(false);
+    setDownloadProgress(100);
+    // Guardar en caché offline
+    if (info) {
+      await cacheStore.set('offline_playlist', id, { info, tracks });
+      const list = await cacheStore.get('offline_playlist', 'list') || [];
+      const exists = list.some((p) => p.id === id);
+      if (!exists) {
+        list.push({ Id: id, Name: info.Name, ImageTags: info.ImageTags || {} });
+        await cacheStore.set('offline_playlist', 'list', list);
+      }
+    }
+  }, [tracks, downloadedIds, downloading, info, id]);
 
   async function load({ forceFresh=false }={}) {
     if (!forceFresh) {
@@ -99,8 +148,17 @@ export function PlaylistDetail() {
       }
     }
     setLoading(true);
-    const data = await fetchDetail(id);
-    setInfo(data.info); setTracks(data.tracks); setLoading(false); setDetailCache(id, data);
+    try {
+      const data = await fetchDetail(id);
+      setInfo(data.info); setTracks(data.tracks); setLoading(false); setDetailCache(id, data);
+    } catch {
+      const offline = await cacheStore.get('offline_playlist', id);
+      if (offline) {
+        setInfo(offline.info); setTracks(offline.tracks); setLoading(false);
+      } else {
+        setLoading(false);
+      }
+    }
   }
 
   useEffect(() => { load(); }, [id]); // eslint-disable-line
@@ -141,6 +199,12 @@ export function PlaylistDetail() {
       <div className="detail-actions-bar">
         {tracks.length > 0 && (
             <button className="fab" onClick={() => playItem(tracks[0], tracks, 'list')}><Play size={22} fill="currentColor" /></button>
+        )}
+        {tracks.length > 0 && (
+          <button className="icon-pill" onClick={handleDownloadAll} disabled={downloading || allDownloaded}
+            title={allDownloaded ? 'Descargado' : downloading ? `Descargando ${downloadProgress}%` : someDownloaded ? 'Descargar restantes' : 'Descargar todo'}>
+            {downloading ? <>{downloadProgress}%</> : allDownloaded ? <CheckCircle size={18} /> : <Download size={18} />}
+          </button>
         )}
         {isPlaylist && (
           <>

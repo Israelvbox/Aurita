@@ -3,9 +3,9 @@ package com.aurita.app
 import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -27,7 +27,12 @@ import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.SettableFuture
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
@@ -42,7 +47,8 @@ import java.util.concurrent.Executors
 )
 class AuritaPlayerPlugin : Plugin() {
 
-    private val preloadExecutor = Executors.newSingleThreadExecutor()
+    private val executor = Executors.newCachedThreadPool()
+    private val offlineDirName = "aurita_offline"
 
     companion object {
         private var player: ExoPlayer? = null
@@ -101,6 +107,10 @@ class AuritaPlayerPlugin : Plugin() {
             data.put("position",     if (pos > 0) pos / 1000.0 else 0.0)
             data.put("currentIndex", pl.currentMediaItemIndex)
             data.put("ended",        pl.playbackState == Player.STATE_ENDED)
+            data.put("idle",         pl.playbackState == Player.STATE_IDLE)
+            data.put("buffering",    pl.playbackState == Player.STATE_BUFFERING)
+            data.put("ready",        pl.playbackState == Player.STATE_READY)
+            data.put("mediaItemCount", pl.mediaItemCount)
             instance?.notifyListeners("stateChanged", data)
         }
 
@@ -112,6 +122,132 @@ class AuritaPlayerPlugin : Plugin() {
     }
 
     override fun load() { instance = this }
+
+    private fun getOfflineDir(): File {
+        val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), offlineDirName)
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    private fun offlineFilePath(itemId: String): File {
+        return File(getOfflineDir(), "${itemId}.mp3")
+    }
+
+    @PluginMethod
+    fun isDownloaded(call: PluginCall) {
+        val itemId = call.getString("itemId") ?: run { call.resolve(JSObject().apply { put("downloaded", false) }); return }
+        val file = offlineFilePath(itemId)
+        val result = JSObject()
+        result.put("downloaded", file.exists())
+        result.put("path", file.absolutePath)
+        call.resolve(result)
+    }
+
+    @PluginMethod
+    fun getDownloadedIds(call: PluginCall) {
+        val dir = getOfflineDir()
+        val files = dir.listFiles() ?: emptyArray()
+        val ids = JSArray()
+        files.filter { it.extension == "mp3" }.forEach { ids.put(it.nameWithoutExtension) }
+        val result = JSObject()
+        result.put("ids", ids)
+        call.resolve(result)
+    }
+
+    @PluginMethod
+    fun downloadTrack(call: PluginCall) {
+        val url = call.getString("url") ?: run { call.reject("Falta url"); return }
+        val itemId = call.getString("itemId") ?: run { call.reject("Falta itemId"); return }
+        val onProgress = call.getBoolean("onProgress", false)
+
+        executor.execute {
+            try {
+                val targetFile = offlineFilePath(itemId)
+                if (targetFile.exists()) {
+                    call.resolve(JSObject().apply { put("path", targetFile.absolutePath) })
+                    return@execute
+                }
+
+                val tempFile = File(targetFile.absolutePath + ".tmp")
+                val connection = URL(url).openConnection() as HttpURLConnection
+                connection.connectTimeout = 15_000
+                connection.readTimeout = 30_000
+                connection.instanceFollowRedirects = true
+                connection.connect()
+
+                val totalSize = connection.contentLength.toLong()
+                val inputStream = connection.inputStream
+                val outputStream = FileOutputStream(tempFile)
+                val buffer = ByteArray(32_768)
+                var bytesRead: Int
+                var totalRead = 0L
+                var lastProgressPct = -1
+
+                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    outputStream.write(buffer, 0, bytesRead)
+                    totalRead += bytesRead
+                    if (onProgress == true && totalSize > 0) {
+                        val pct = ((totalRead * 100) / totalSize).toInt()
+                        if (pct != lastProgressPct) {
+                            lastProgressPct = pct
+                            val progressData = JSObject()
+                            progressData.put("itemId", itemId)
+                            progressData.put("progress", pct)
+                            instance?.notifyListeners("downloadProgress", progressData)
+                        }
+                    }
+                }
+
+                inputStream.close()
+                outputStream.close()
+                tempFile.renameTo(targetFile)
+
+                val result = JSObject()
+                result.put("path", targetFile.absolutePath)
+                result.put("size", totalRead)
+                call.resolve(result)
+            } catch (e: Exception) {
+                call.reject("Error descargando: ${e.message}")
+            }
+        }
+    }
+
+    @PluginMethod
+    fun deleteDownload(call: PluginCall) {
+        val itemId = call.getString("itemId") ?: run { call.resolve(); return }
+        offlineFilePath(itemId).delete()
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun getOfflinePath(call: PluginCall) {
+        val itemId = call.getString("itemId") ?: run { call.reject("Falta itemId"); return }
+        val file = offlineFilePath(itemId)
+        call.resolve(JSObject().apply {
+            put("path", file.absolutePath)
+            put("exists", file.exists())
+        })
+    }
+
+    private fun saveQueueToPrefs(items: List<MediaItem>, startIndex: Int) {
+        val prefs = context.getSharedPreferences("aurita_player", Context.MODE_PRIVATE)
+        val jsonArray = JSONArray()
+        for (item in items) {
+            val uri = item.localConfiguration?.uri?.toString() ?: ""
+            val meta = item.mediaMetadata
+            val obj = JSONObject()
+            obj.put("url", uri)
+            obj.put("title", meta.title?.toString() ?: "")
+            obj.put("artist", meta.artist?.toString() ?: "")
+            obj.put("album", meta.albumTitle?.toString() ?: "")
+            obj.put("artworkUrl", meta.artworkUri?.toString() ?: "")
+            jsonArray.put(obj)
+        }
+        prefs.edit()
+            .putString("last_queue_json", jsonArray.toString())
+            .putInt("last_queue_index", startIndex)
+            .apply()
+    }
 
     @PluginMethod
     fun play(call: PluginCall) {
@@ -137,16 +273,7 @@ class AuritaPlayerPlugin : Plugin() {
         if (items.isEmpty()) { call.reject("No hay tracks válidos"); return }
 
         val safeIndex = startIndex.coerceIn(0, items.size - 1)
-        val current = items[safeIndex]
-
-        val cm = current.mediaMetadata
-        context.getSharedPreferences("aurita_player", Context.MODE_PRIVATE).edit()
-            .putString("last_url",     current.localConfiguration?.uri?.toString() ?: "")
-            .putString("last_title",   cm.title?.toString() ?: "")
-            .putString("last_artist",  cm.artist?.toString() ?: "")
-            .putString("last_album",   cm.albumTitle?.toString() ?: "")
-            .putString("last_artwork", cm.artworkUri?.toString() ?: "")
-            .apply()
+        saveQueueToPrefs(items, safeIndex)
 
         activity.runOnUiThread {
             val p = player
@@ -172,7 +299,15 @@ class AuritaPlayerPlugin : Plugin() {
 
     @PluginMethod
     fun resume(call: PluginCall) {
-        activity.runOnUiThread { player?.apply { play(); notifyStateChange(this) } }
+        activity.runOnUiThread {
+            val p = player ?: run { call.resolve(); return@runOnUiThread }
+            if (p.playbackState == Player.STATE_ENDED) {
+                p.seekToDefaultPosition()
+                p.prepare()
+            }
+            p.play()
+            notifyStateChange(p)
+        }
         call.resolve()
     }
 
@@ -180,8 +315,10 @@ class AuritaPlayerPlugin : Plugin() {
     fun next(call: PluginCall) {
         activity.runOnUiThread {
             val p = player ?: return@runOnUiThread
-            p.seekToNext()
-            p.play()
+            if (p.hasNextMediaItem()) {
+                p.seekToNext()
+                p.play()
+            }
         }
         call.resolve()
     }
@@ -211,6 +348,7 @@ class AuritaPlayerPlugin : Plugin() {
         val tracksArray = call.getArray("tracks") ?: run { call.resolve(); return }
         activity.runOnUiThread {
             val p = player ?: run { call.resolve(); return@runOnUiThread }
+            var added = 0
             for (i in 0 until tracksArray.length()) {
                 val t = tracksArray.getJSONObject(i) ?: continue
                 val url = t.optString("url", ""); if (url.isEmpty()) continue
@@ -224,6 +362,17 @@ class AuritaPlayerPlugin : Plugin() {
                     }
                     .build()
                 p.addMediaItem(MediaItem.Builder().setUri(Uri.parse(url)).setMediaMetadata(meta).build())
+                added++
+            }
+            if (added > 0) {
+                // Actualizar cola guardada con nuevos items
+                val currentCount = p.mediaItemCount
+                val allItems = mutableListOf<MediaItem>()
+                for (i in 0 until currentCount) {
+                    val timelineItem = p.getMediaItemAt(i)
+                    allItems.add(timelineItem)
+                }
+                saveQueueToPrefs(allItems, p.currentMediaItemIndex)
             }
         }
         call.resolve()
@@ -257,6 +406,7 @@ class AuritaPlayerPlugin : Plugin() {
             result.put("duration",     if ((pl?.duration ?: 0) > 0) pl!!.duration / 1000.0 else 0.0)
             result.put("position",     pl?.currentPosition?.div(1000.0) ?: 0.0)
             result.put("currentIndex", pl?.currentMediaItemIndex ?: -1)
+            result.put("mediaItemCount", pl?.mediaItemCount ?: 0)
             call.resolve(result)
         }
     }
@@ -266,7 +416,7 @@ class AuritaPlayerPlugin : Plugin() {
         val url   = call.getString("url") ?: run { call.resolve(); return }
         val cache = AuritaMediaService.audioCache  ?: run { call.resolve(); return }
 
-        preloadExecutor.execute {
+        executor.execute {
             val factory = CacheDataSource.Factory()
                 .setCache(cache)
                 .setUpstreamDataSourceFactory(

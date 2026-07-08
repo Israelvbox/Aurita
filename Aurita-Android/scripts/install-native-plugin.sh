@@ -33,12 +33,13 @@ if [[ ! -f "$MAIN_ACTIVITY" ]]; then
   exit 1
 fi
 
-# ---- 1. Copiar los .kt ----
+# ---- 1. Copiar los .kt y MainActivity.java ----
 mkdir -p "$PACKAGE_PATH"
 cp native-plugin/AuritaPlayer/AuritaMediaService.kt "$PACKAGE_PATH/AuritaMediaService.kt"
 cp native-plugin/AuritaPlayer/AuritaPlayerPlugin.kt "$PACKAGE_PATH/AuritaPlayerPlugin.kt"
 cp native-plugin/CarConnectionReceiver/CarConnectionReceiver.kt "$PACKAGE_PATH/CarConnectionReceiver.kt"
-echo "✓ Archivos Kotlin copiados a $PACKAGE_PATH"
+cp native-plugin/AuritaPlayer/MainActivity.java "$PACKAGE_PATH/MainActivity.java"
+echo "✓ Archivos Kotlin + MainActivity copiados a $PACKAGE_PATH"
 
 # ---- 2. Activar Kotlin en el proyecto (Capacitor genera Java puro) ----
 # Sin esto, Gradle simplemente IGNORA los .kt — ni da error de compilación
@@ -150,6 +151,10 @@ add_permission "FOREGROUND_SERVICE_MEDIA_PLAYBACK"
 # de reproducción de Media3. Sin él, la notificación del reproductor
 # simplemente no aparece en la bandeja.
 add_permission "POST_NOTIFICATIONS"
+# WakeLock para evitar que la CPU duerma durante reproducción
+add_permission "WAKE_LOCK"
+# Monitoreo de red para reconectar automáticamente
+add_permission "ACCESS_NETWORK_STATE"
 
 # ---- 5. Eliminar PlaybackService antiguo si existe ----
 if grep -q "PlaybackService" "$MANIFEST"; then
@@ -231,38 +236,8 @@ PYEOF
   echo "✓ AuritaMediaService, CarConnectionReceiver y meta-data Android Auto registrados."
 fi
 
-# ---- 8. Registrar el plugin en MainActivity ----
-if grep -q "AuritaPlayerPlugin" "$MAIN_ACTIVITY"; then
-  echo "✓ El plugin ya estaba registrado en MainActivity."
-else
-  python3 - "$MAIN_ACTIVITY" << 'PYEOF'
-import sys, re
-path = sys.argv[1]
-with open(path) as f:
-    content = f.read()
-
-new_class_body = '''public class MainActivity extends BridgeActivity {
-    @Override
-    public void onCreate(android.os.Bundle savedInstanceState) {
-        registerPlugin(AuritaPlayerPlugin.class);
-        super.onCreate(savedInstanceState);
-    }
-}
-'''
-
-content = re.sub(
-    r'public class MainActivity extends BridgeActivity\s*\{[^}]*\}',
-    new_class_body,
-    content,
-    count=1,
-    flags=re.DOTALL,
-)
-
-with open(path, 'w') as f:
-    f.write(content)
-PYEOF
-  echo "✓ Plugin registrado en MainActivity."
-fi
+# ---- 8. MainActivity ya se copia en el paso 1 ----
+echo "✓ MainActivity.java copiado desde native-plugin/ (paso 1)."
 
 echo ""
 echo "Listo. Ahora ejecuta: npm run cap:sync"

@@ -4,10 +4,16 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
@@ -15,6 +21,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
@@ -56,6 +63,12 @@ class AuritaMediaService : MediaLibraryService() {
     private var player: ExoPlayer? = null
     private var mediaSession: MediaLibrarySession? = null
     private var notificationManager: NotificationManager? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var retryCount = 0
+    private var retryHandler = Handler(Looper.getMainLooper())
+    private var hasNetwork = true
 
     private val progressHandler = Handler(Looper.getMainLooper())
     private val progressRunnable = object : Runnable {
@@ -73,7 +86,7 @@ class AuritaMediaService : MediaLibraryService() {
     private fun updateBluetoothPlaybackState(p: ExoPlayer) {
         val s = mediaSession ?: return
         val posMs = p.currentPosition
-        if (posMs <= 0 || posMs == C.TIME_UNSET) return
+        if (posMs <= 0) return
         try {
             val compatField = MediaSession::class.java.getDeclaredField("sessionCompat")
             compatField.isAccessible = true
@@ -95,7 +108,7 @@ class AuritaMediaService : MediaLibraryService() {
     private fun prefs() = getSharedPreferences("aurita_player", MODE_PRIVATE)
 
     private fun savePosition(posMs: Long) {
-        if (posMs > 0 && posMs != C.TIME_UNSET) {
+        if (posMs > 0) {
             prefs().edit().putLong("last_position", posMs).apply()
         }
     }
@@ -103,23 +116,125 @@ class AuritaMediaService : MediaLibraryService() {
     private fun restorePlayback() {
         val p = player ?: return
         if (p.mediaItemCount > 0) return
-        val url = prefs().getString("last_url", null)
-        if (url.isNullOrEmpty()) return
-        val metadata = MediaMetadata.Builder()
-            .setTitle(prefs().getString("last_title", "") ?: "")
-            .setArtist(prefs().getString("last_artist", "") ?: "")
-            .setAlbumTitle(prefs().getString("last_album", "") ?: "")
-            .apply {
-                prefs().getString("last_artwork", null)
-                    ?.takeIf { it.isNotEmpty() }
-                    ?.let { setArtworkUri(android.net.Uri.parse(it)) }
-            }
-            .build()
+
+        val queueJson = prefs().getString("last_queue_json", null)
+        if (queueJson != null) {
+            try {
+                val orgJson = org.json.JSONArray(queueJson)
+                val items = mutableListOf<MediaItem>()
+                for (i in 0 until orgJson.length()) {
+                    val obj = orgJson.getJSONObject(i)
+                    val url = obj.optString("url", ""); if (url.isEmpty()) continue
+                    val meta = MediaMetadata.Builder()
+                        .setTitle(obj.optString("title", ""))
+                        .setArtist(obj.optString("artist", ""))
+                        .setAlbumTitle(obj.optString("album", ""))
+                        .apply {
+                            val art = obj.optString("artworkUrl", "")
+                            if (art.isNotEmpty()) setArtworkUri(android.net.Uri.parse(art))
+                        }
+                        .build()
+                    items.add(MediaItem.Builder().setUri(url).setMediaMetadata(meta).build())
+                }
+                if (items.isNotEmpty()) {
+                    val idx = prefs().getInt("last_queue_index", 0).coerceIn(0, items.size - 1)
+                    val pos = prefs().getLong("last_position", 0L)
+                    p.setMediaItems(items, idx, if (pos > 0) pos else C.TIME_UNSET)
+                    p.prepare()
+                    return
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Fallback: legacy individual prefs
+        val len = prefs().getInt("last_queue_length", 0)
+        if (len == 0) return
+        val items = mutableListOf<MediaItem>()
+        for (i in 0 until len) {
+            val url = prefs().getString("last_queue_${i}_url", null) ?: continue
+            val meta = MediaMetadata.Builder()
+                .setTitle(prefs().getString("last_queue_${i}_title", "") ?: "")
+                .setArtist(prefs().getString("last_queue_${i}_artist", "") ?: "")
+                .setAlbumTitle(prefs().getString("last_queue_${i}_album", "") ?: "")
+                .apply {
+                    prefs().getString("last_queue_${i}_artwork", null)
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { setArtworkUri(android.net.Uri.parse(it)) }
+                }
+                .build()
+            items.add(MediaItem.Builder().setUri(url).setMediaMetadata(meta).build())
+        }
+        if (items.isEmpty()) return
+        val idx = prefs().getInt("last_queue_index", 0).coerceIn(0, items.size - 1)
         val pos = prefs().getLong("last_position", 0L)
-        val item = MediaItem.Builder().setUri(url).setMediaMetadata(metadata).build()
-        p.setMediaItem(item, pos)
+        p.setMediaItems(items, idx, if (pos > 0) pos else C.TIME_UNSET)
+        p.prepare()
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "Aurita:MusicPlayback"
+            ).apply { setReferenceCounted(false) }
+        }
+        if (!wakeLock!!.isHeld) {
+            wakeLock!!.acquire(4 * 60 * 60 * 1000L) // 4 hours max
+        }
+    }
+
+    private fun releaseWakeLock() {
+        if (wakeLock?.isHeld == true) {
+            wakeLock!!.release()
+        }
+    }
+
+    private val retryRunnable = Runnable {
+        retryPlayback()
+    }
+
+    private fun retryPlayback() {
+        val p = player ?: return
+        if (p.playbackState != Player.STATE_IDLE && p.playbackState != Player.STATE_ENDED) return
+        if (!hasNetwork) {
+            retryCount++
+            val delay = (retryCount.coerceAtMost(10) * 2000L).coerceAtMost(30_000L)
+            retryHandler.postDelayed(retryRunnable, delay)
+            return
+        }
+        retryCount = 0
         p.prepare()
         p.play()
+    }
+
+    private fun setupNetworkMonitor() {
+        val mainHandler = Handler(Looper.getMainLooper())
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                hasNetwork = true
+                retryCount = 0
+                mainHandler.post { retryPlayback() }
+            }
+
+            override fun onLost(network: Network) {
+                hasNetwork = false
+            }
+
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                val wasOffline = !hasNetwork
+                hasNetwork = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                if (wasOffline && hasNetwork) {
+                    retryCount = 0
+                    mainHandler.post { retryPlayback() }
+                }
+            }
+        }
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        connectivityManager?.registerNetworkCallback(request, networkCallback!!)
     }
 
     private val libraryCallback = object : MediaLibrarySession.Callback {
@@ -198,12 +313,13 @@ class AuritaMediaService : MediaLibraryService() {
 
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(8_000)
-            .setReadTimeoutMs(8_000)
+            .setConnectTimeoutMs(10_000)
+            .setReadTimeoutMs(30_000)
 
+        val upstreamFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
         val cacheDataSourceFactory = CacheDataSource.Factory()
             .setCache(audioCache!!)
-            .setUpstreamDataSourceFactory(httpDataSourceFactory)
+            .setUpstreamDataSourceFactory(upstreamFactory)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
         val audioAttributes = AudioAttributes.Builder()
@@ -212,7 +328,7 @@ class AuritaMediaService : MediaLibraryService() {
             .build()
 
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(2_000, 8_000, 100, 1_000)
+            .setBufferDurationsMs(5_000, 15_000, 200, 1_000)
             .build()
 
         player = ExoPlayer.Builder(this)
@@ -240,9 +356,11 @@ class AuritaMediaService : MediaLibraryService() {
                 AuritaPlayerPlugin.notifyStateChange(player)
                 updateNotification()
                 if (isPlaying) {
+                    acquireWakeLock()
                     progressHandler.removeCallbacks(progressRunnable)
                     progressHandler.postDelayed(progressRunnable, 250)
                 } else {
+                    releaseWakeLock()
                     progressHandler.removeCallbacks(progressRunnable)
                     player?.let { savePosition(it.currentPosition) }
                 }
@@ -255,6 +373,9 @@ class AuritaMediaService : MediaLibraryService() {
 
             override fun onPlaybackStateChanged(state: Int) {
                 AuritaPlayerPlugin.notifyStateChange(player)
+                if (state == Player.STATE_ENDED) {
+                    releaseWakeLock()
+                }
             }
 
             override fun onTimelineChanged(timeline: Timeline, reason: Int) {
@@ -264,10 +385,15 @@ class AuritaMediaService : MediaLibraryService() {
 
             override fun onPlayerError(error: PlaybackException) {
                 AuritaPlayerPlugin.notifyError(error.message ?: "Error de reproducción")
+                retryCount++
+                val delay = (retryCount.coerceAtMost(10) * 2000L).coerceAtMost(30_000L)
+                retryHandler.removeCallbacks(retryRunnable)
+                retryHandler.postDelayed(retryRunnable, delay)
             }
         })
 
         AuritaPlayerPlugin.attachPlayer(player)
+        setupNetworkMonitor()
     }
 
     private fun createNotificationChannel() {
@@ -309,7 +435,7 @@ class AuritaMediaService : MediaLibraryService() {
             .setContentIntent(contentIntent)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOnlyAlertOnce(true)
-            .setOngoing(isPlaying)
+            .setOngoing(true)
             .addAction(android.R.drawable.ic_media_previous, "Anterior", actionPi(ACTION_PREV, 1))
             .addAction(
                 if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
@@ -326,20 +452,11 @@ class AuritaMediaService : MediaLibraryService() {
     }
 
     private fun updateNotification() {
-        val p = player ?: return
+        if (player == null) return
         val notification = buildNotification()
-        if (p.isPlaying) {
-            try {
-                startForeground(NOTIFICATION_ID, notification)
-            } catch (_: Exception) {
-                notificationManager?.notify(NOTIFICATION_ID, notification)
-            }
-        } else {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_DETACH)
-            } else {
-                @Suppress("DEPRECATION") stopForeground(false)
-            }
+        try {
+            startForeground(NOTIFICATION_ID, notification)
+        } catch (_: Exception) {
             notificationManager?.notify(NOTIFICATION_ID, notification)
         }
     }
@@ -355,25 +472,55 @@ class AuritaMediaService : MediaLibraryService() {
             }
             ACTION_RESUME -> {
                 val p = player
-                if (p != null && p.mediaItemCount > 0 && p.currentPosition > 0) {
+                if (p != null && p.mediaItemCount > 0) {
+                    if (p.playbackState == Player.STATE_ENDED) {
+                        p.seekToDefaultPosition()
+                        p.prepare()
+                    }
                     p.play()
                 } else {
                     restorePlayback()
                 }
             }
-            ACTION_PREV   -> AuritaPlayerPlugin.triggerPrev()
-            ACTION_NEXT   -> AuritaPlayerPlugin.triggerNext()
+            ACTION_PREV   -> {
+                player?.let {
+                    if (it.hasPreviousMediaItem()) it.seekToPrevious() else it.seekTo(0)
+                    it.play()
+                }
+            }
+            ACTION_NEXT   -> {
+                player?.let {
+                    it.seekToNext()
+                    it.play()
+                }
+            }
+            null -> {
+                // Recreación del proceso: restaurar playback
+                if (player?.mediaItemCount == 0) {
+                    restorePlayback()
+                }
+            }
         }
         return START_STICKY
     }
 
+    @Suppress("DEPRECATION")
     override fun onTaskRemoved(rootIntent: Intent?) {
-        if (player?.isPlaying != true) stopSelf()
+        player?.let { savePosition(it.currentPosition) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            stopForeground(true)
+        }
+        stopSelf()
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
         progressHandler.removeCallbacks(progressRunnable)
+        retryHandler.removeCallbacks(retryRunnable)
+        networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
+        releaseWakeLock()
         AuritaPlayerPlugin.detachPlayer()
         notificationManager?.cancel(NOTIFICATION_ID)
         mediaSession?.run { player.release(); release(); mediaSession = null }
