@@ -4,6 +4,7 @@ import { jellyfin } from '../api/jellyfin.js';
 import { service } from '../api/service.js';
 import { historyStore, cacheStore } from '../db/storage.js';
 import { getEffectiveGenres } from '../api/genreIndex.js';
+import { useOfflineStore } from './offlineStore.js';
 
 const AuritaPlayer = registerPlugin('AuritaPlayer');
 
@@ -56,6 +57,7 @@ async function resolveStreamUrl(item) {
       return fileUrl;
     }
   } catch {}
+  if (useOfflineStore.getState().isOffline) return '';
   const url = jellyfin.streamUrl(id);
   offlineUrlCache.set(id, url);
   return url;
@@ -78,13 +80,14 @@ async function serializeTracks(queue) {
 }
 
 function persistQueue(state) {
-  const { queue, currentIndex, repeatMode, shuffle, duration } = state;
+  const { queue, currentIndex, repeatMode, shuffle, duration, currentTime } = state;
   cacheStore.set('player', QUEUE_SAVE_KEY, {
     queue: queue.slice(0, 100),
     currentIndex,
     repeatMode,
     shuffle,
     duration,
+    currentTime,
     savedAt: Date.now(),
   }, 24 * 60 * 60 * 1000).catch(() => {});
 }
@@ -106,6 +109,7 @@ function getNextIndex(queue, currentIndex, shuffle, repeatMode) {
 export const usePlayerStore = create((set, get) => {
   let _markedPlayed = new Set();
   let _stateEndedHandled = false;
+  let _autoFillPromise = null;
 
   AuritaPlayer.addListener('stateChanged', (data) => {
     const prevIndex = get().currentIndex;
@@ -147,11 +151,11 @@ export const usePlayerStore = create((set, get) => {
       if (nextIdx >= 0 && nextIdx < queue.length) {
         get().playItem(queue[nextIdx], queue, queueSource);
       } else if (nextIdx === -1) {
-        // No hay más canciones en la cola JS — intentar autofill
         get()._maybeAutoFill().then(() => {
-          const { queue: newQueue, currentIndex: ci } = get();
-          if (ci >= 0 && ci + 1 < newQueue.length) {
-            get().playItem(newQueue[ci + 1], newQueue, get().queueSource);
+          const st = get();
+          const idx = getNextIndex(st.queue, st.currentIndex, st.shuffle, st.repeatMode);
+          if (idx >= 0 && idx < st.queue.length) {
+            get().playItem(st.queue[idx], st.queue, st.queueSource);
           }
         });
       }
@@ -173,6 +177,10 @@ export const usePlayerStore = create((set, get) => {
 
   AuritaPlayer.addListener('playerError', (data) => {
     console.error('[Aurita] No se pudo reproducir:', data.message);
+    const msg = (data.message || '').toLowerCase();
+    if (msg.includes('http') || msg.includes('network') || msg.includes('connect') || msg.includes('timeout')) {
+      useOfflineStore.getState().setOffline(true);
+    }
   });
 
   AuritaPlayer.addListener('prevTrack', () => get().prev());
@@ -207,12 +215,14 @@ export const usePlayerStore = create((set, get) => {
 
       const ci = Math.min(saved.currentIndex, saved.queue.length - 1);
       const savedDuration = saved.duration || (saved.queue[ci]?.RunTimeTicks ? Math.round(saved.queue[ci].RunTimeTicks / 10_000_000) : 0);
+      const savedPosition = saved.currentTime || 0;
       set({
         queue: saved.queue,
         currentIndex: ci,
         repeatMode: saved.repeatMode || 'off',
         shuffle: saved.shuffle || false,
         duration: savedDuration,
+        currentTime: savedPosition,
       });
 
       AuritaPlayer.setRepeatMode({ mode: saved.repeatMode || 'off' }).catch(() => {});
@@ -227,24 +237,34 @@ export const usePlayerStore = create((set, get) => {
           const { queue, currentIndex } = get();
           if (queue.length > 0 && currentIndex >= 0) {
             const tracks = await serializeTracks(queue);
-            AuritaPlayer.play({
+            await AuritaPlayer.play({
               tracks,
               startIndex: currentIndex,
               autoPlay: false,
             }).catch(() => {});
+            if (savedPosition > 0) {
+              AuritaPlayer.seekTo({ seconds: savedPosition }).catch(() => {});
+            }
           }
         }
       } catch {
         const { queue, currentIndex } = get();
         if (queue.length > 0 && currentIndex >= 0) {
           const tracks = await serializeTracks(queue);
-          AuritaPlayer.play({
+          await AuritaPlayer.play({
             tracks,
             startIndex: currentIndex,
             autoPlay: false,
           }).catch(() => {});
+          if (savedPosition > 0) {
+            AuritaPlayer.seekTo({ seconds: savedPosition }).catch(() => {});
+          }
         }
       }
+    },
+
+    persistNow() {
+      persistQueue(get());
     },
 
     async playItem(item, queue = null, source = 'other') {
@@ -366,6 +386,20 @@ export const usePlayerStore = create((set, get) => {
       persistQueue(get());
     },
 
+    moveInQueue(fromIdx, toIdx) {
+      const { queue, currentIndex } = get();
+      if (fromIdx === toIdx) return;
+      const newQueue = [...queue];
+      const [moved] = newQueue.splice(fromIdx, 1);
+      newQueue.splice(toIdx, 0, moved);
+      let newIndex = currentIndex;
+      if (fromIdx < currentIndex && toIdx >= currentIndex) newIndex--;
+      else if (fromIdx > currentIndex && toIdx <= currentIndex) newIndex++;
+      else if (fromIdx === currentIndex) newIndex = toIdx;
+      set({ queue: newQueue, currentIndex: newIndex });
+      persistQueue(get());
+    },
+
     addNextManual(item) {
       const { queue, currentIndex } = get();
       const newQueue = [...queue];
@@ -376,6 +410,8 @@ export const usePlayerStore = create((set, get) => {
     },
 
     async _maybeAutoFill() {
+      if (_autoFillPromise) return _autoFillPromise;
+
       const { queue, currentIndex, autoFilling, _autoFillSourceId } = get();
       const remaining = queue.length - 1 - currentIndex;
       const current = queue[currentIndex];
@@ -383,32 +419,29 @@ export const usePlayerStore = create((set, get) => {
       if (_autoFillSourceId === current.Id) return;
 
       set({ autoFilling: true, _autoFillSourceId: current.Id });
-      try {
-        const res = await service.getInstantMix(current.Id, 30);
-        const existingIds = new Set(queue.map((i) => i.Id));
-        let fresh = (res.Items || []).filter((i) => !existingIds.has(i.Id));
+      _autoFillPromise = (async () => {
+        try {
+          const res = await service.getInstantMix(current.Id, 30);
+          const existingIds = new Set(queue.map((i) => i.Id));
+          let fresh = (res.Items || []).filter((i) => !existingIds.has(i.Id));
 
-        const currentGenres = new Set(current.Genres || []);
-        if (currentGenres.size > 0) {
-          const related = fresh.filter((i) => (i.Genres || []).some((g) => currentGenres.has(g)));
-          const unrelated = fresh.filter((i) => !related.includes(i));
-          fresh = [...related, ...unrelated];
-        }
+          if (fresh.length === 0) return;
 
-        fresh = fresh.slice(0, 15);
-        if (fresh.length > 0) {
+          fresh = fresh.slice(0, 15);
           set((state) => ({ queue: [...state.queue, ...fresh] }));
           warmUpcoming(get().queue, get().currentIndex);
           persistQueue(get());
 
           const tracks = await serializeTracks(fresh);
           AuritaPlayer.addToQueue({ tracks }).catch(() => {});
+        } catch (err) {
+          console.warn('[Aurita] No se pudo autocompletar la cola:', err);
+        } finally {
+          set({ autoFilling: false });
+          _autoFillPromise = null;
         }
-      } catch (err) {
-        console.warn('[Aurita] No se pudo autocompletar la cola:', err);
-      } finally {
-        set({ autoFilling: false });
-      }
+      })();
+      return _autoFillPromise;
     },
   };
 });

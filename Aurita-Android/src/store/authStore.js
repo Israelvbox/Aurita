@@ -59,6 +59,10 @@ export const useAuthStore = create((set) => ({
 
   async logout() {
     await jellyfin.logout();
+    const { clearCache } = await import('../api/cacheManager.js');
+    clearCache();
+    const { cacheStore } = await import('../db/storage.js');
+    await cacheStore.delete('player', 'player_queue');
     set({ user: null, status: 'unauthenticated' });
   },
 }));

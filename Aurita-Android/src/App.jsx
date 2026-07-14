@@ -1,10 +1,12 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import { Network } from '@capacitor/network';
 import { useAuthStore } from './store/authStore.js';
 import { useFavoritesStore } from './store/favoritesStore.js';
 import { usePlaylistMembershipStore } from './store/playlistMembershipStore.js';
 import { usePlayerStore } from './store/playerStore.js';
+import { useOfflineStore } from './store/offlineStore.js';
 import { warmGenreIndex } from './api/genreIndex.js';
 import { service } from './api/service.js';
 import { setHomeCache } from './pages/Home.jsx';
@@ -19,6 +21,8 @@ import Library from './pages/Library.jsx';
 import Favorites from './pages/Favorites.jsx';
 import PlaylistDetail from './pages/PlaylistDetail.jsx';
 import ArtistDetail from './pages/ArtistDetail.jsx';
+import Settings from './pages/Settings.jsx';
+import MixDetail from './pages/MixDetail.jsx';
 import logo from './assets/logo.png';
 
 export default function App() {
@@ -39,6 +43,20 @@ export default function App() {
     LocalNotifications.requestPermissions().catch(() => {});
     requestBluetoothPermission();
   }, []);
+
+  useEffect(() => {
+    if (status !== 'authenticated') return;
+    Network.getStatus().then((s) => useOfflineStore.getState().setOffline(!s.connected));
+    const handler = Network.addListener('networkStatusChange', (s) => {
+      const wasOffline = useOfflineStore.getState().isOffline;
+      useOfflineStore.getState().setOffline(!s.connected);
+      if (wasOffline && s.connected) {
+        onAppResumed();
+        usePlayerStore.getState().restoreQueue();
+      }
+    });
+    return () => { handler.remove(); };
+  }, [status]);
 
   useEffect(() => {
     if (status !== 'authenticated') return;
@@ -70,7 +88,9 @@ export default function App() {
   // revalidamos favoritos silenciosamente, comprobamos sync nueva y re-poblamos cola nativa
   useEffect(() => {
     function handleVisibility() {
-      if (!document.hidden && status === 'authenticated') {
+      if (document.hidden && status === 'authenticated') {
+        usePlayerStore.getState().persistNow();
+      } else if (!document.hidden && status === 'authenticated') {
         onAppResumed();
         usePlayerStore.getState().restoreQueue();
       }
@@ -83,7 +103,8 @@ export default function App() {
     return (
       <div className="boot-screen">
         <img src={logo} alt="" className="boot-screen__icon" />
-        <span>Aurita</span>
+        <div className="boot-screen__title">Aurita</div>
+        <div className="boot-screen__sub">Cargando tu música…</div>
       </div>
     );
   }
@@ -99,6 +120,8 @@ export default function App() {
         <Route path="/favoritos"    element={<Favorites />} />
         <Route path="/playlist/:id" element={<PlaylistDetail />} />
         <Route path="/artist/:id"   element={<ArtistDetail />} />
+        <Route path="/ajustes"      element={<Settings />} />
+        <Route path="/mix"          element={<MixDetail />} />
         <Route path="*"             element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

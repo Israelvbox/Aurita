@@ -207,9 +207,19 @@ export const usePlayerStore = create((set, get) => {
       const vol = saved.volume ?? 1;
       ensureAudioContext();
       if (masterGain) masterGain.gain.value = vol;
+
+      const ci = Math.min(saved.currentIndex, saved.queue.length - 1);
+      const current = saved.queue[ci];
+
+      // Precargar el audio de la pista actual sin reproducir
+      if (current) {
+        audio.src = jellyfin.streamUrl(current.Id);
+        audio.load();
+      }
+
       set({
         queue: saved.queue,
-        currentIndex: Math.min(saved.currentIndex, saved.queue.length - 1),
+        currentIndex: ci,
         volume: vol,
         repeatMode: saved.repeatMode || 'off',
         shuffle: saved.shuffle || false,
@@ -333,6 +343,20 @@ export const usePlayerStore = create((set, get) => {
       if (index === currentIndex) return;
       const newQueue = queue.filter((_, i) => i !== index);
       const newIndex = index < currentIndex ? currentIndex - 1 : currentIndex;
+      set({ queue: newQueue, currentIndex: newIndex });
+      persist(get());
+    },
+
+    moveInQueue(fromIdx, toIdx) {
+      const { queue, currentIndex } = get();
+      if (fromIdx === toIdx) return;
+      const newQueue = [...queue];
+      const [moved] = newQueue.splice(fromIdx, 1);
+      newQueue.splice(toIdx, 0, moved);
+      let newIndex = currentIndex;
+      if (fromIdx < currentIndex && toIdx >= currentIndex) newIndex--;
+      else if (fromIdx > currentIndex && toIdx <= currentIndex) newIndex++;
+      else if (fromIdx === currentIndex) newIndex = toIdx;
       set({ queue: newQueue, currentIndex: newIndex });
       persist(get());
     },

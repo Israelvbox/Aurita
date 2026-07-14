@@ -27,7 +27,7 @@ registerInvalidator('home', () => {
 
 export default function Home() {
   const navigate  = useNavigate();
-  const { user, logout } = useAuthStore();
+  const { user } = useAuthStore();
   const playItem  = usePlayerStore((s) => s.playItem);
   const isFresh   = Date.now() - homeCache.fetchedAt < REFRESH_MS;
 
@@ -81,8 +81,12 @@ export default function Home() {
   }); // sin deps: corre en cada render, pero el if lo hace muy barato
 
   function handlePlayMix(m) {
-    const q = m._mixItems || [];
-    if (q.length > 0) playItem(q[0], q);
+    navigate('/mix', {
+      state: {
+        title: m.Name || 'Mix',
+        items: m._mixItems || [],
+      },
+    });
   }
 
   return (
@@ -93,8 +97,8 @@ export default function Home() {
           <span>Aurita</span>
         </div>
         <button className="user-avatar"
-          onClick={() => { if (confirm('¿Cerrar sesión?')) logout(); }}
-          title="Cerrar sesión">
+          onClick={() => navigate('/ajustes')}
+          title="Ajustes">
           {(user?.Name || 'U')[0].toUpperCase()}
         </button>
       </div>

@@ -16,6 +16,8 @@ import Library from './pages/Library.jsx';
 import Favorites from './pages/Favorites.jsx';
 import PlaylistDetail from './pages/PlaylistDetail.jsx';
 import ArtistDetail from './pages/ArtistDetail.jsx';
+import MixView from './pages/MixView.jsx';
+import Settings from './pages/Settings.jsx';
 import logo from './assets/logo.png';
 
 export default function App() {
@@ -88,6 +90,8 @@ export default function App() {
         <Route path="/favoritos"    element={<Favorites />} />
         <Route path="/playlist/:id" element={<PlaylistDetail />} />
         <Route path="/artist/:id"   element={<ArtistDetail />} />
+        <Route path="/mix/:id"      element={<MixView />} />
+        <Route path="/ajustes"      element={<Settings />} />
         <Route path="*"             element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

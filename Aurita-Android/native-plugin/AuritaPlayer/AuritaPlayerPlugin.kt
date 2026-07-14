@@ -95,9 +95,6 @@ class AuritaPlayerPlugin : Plugin() {
 
         fun detachPlayer() { player = null }
 
-        fun triggerPrev() { instance?.notifyListeners("prevTrack", JSObject()) }
-        fun triggerNext() { instance?.notifyListeners("nextTrack", JSObject()) }
-
         fun notifyStateChange(p: ExoPlayer?) {
             val pl = p ?: return
             val data = JSObject()
@@ -118,6 +115,10 @@ class AuritaPlayerPlugin : Plugin() {
             val data = JSObject()
             data.put("message", message)
             instance?.notifyListeners("playerError", data)
+        }
+
+        fun notifySleepTimerEnded() {
+            instance?.notifyListeners("sleepTimerEnded", JSObject())
         }
     }
 
@@ -495,6 +496,23 @@ class AuritaPlayerPlugin : Plugin() {
             buildMediaItem(obj)?.let { list.add(it) }
         }
         catalog[parentId] = list
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun startSleepTimer(call: PluginCall) {
+        val minutes = call.getInt("minutes") ?: 30
+        activity.runOnUiThread {
+            AuritaMediaService.setSleepTimer(minutes)
+        }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun cancelSleepTimer(call: PluginCall) {
+        activity.runOnUiThread {
+            AuritaMediaService.cancelSleepTimer()
+        }
         call.resolve()
     }
 

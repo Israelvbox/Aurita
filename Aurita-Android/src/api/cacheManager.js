@@ -74,6 +74,11 @@ async function checkSyncVersion() {
   } catch {}
 }
 
+export function clearCache() {
+  Object.keys(_invalidators).forEach(k => _invalidators[k]?.());
+  _knownSyncVersion = -1;
+}
+
 function pingServer() {
   fetch(`${jellyfin.baseUrl}/startup/invalidate`, {
     method: 'POST',

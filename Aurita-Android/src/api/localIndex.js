@@ -152,3 +152,22 @@ export function getGenresLocal() {
   if (!_ready || _genres.length === 0) return null;
   return { Items: _genres.map(g => ({ Id: g.id, Name: g.name, Type: 'MusicGenre' })) };
 }
+
+/** Busca un track por id en el índice local */
+export function getTrackById(id) {
+  if (!_ready || !id) return null;
+  return _tracks.find(t => t.id === id) || null;
+}
+
+/** Devuelve todos los tracks del índice local */
+export function getAllTracksLocal() {
+  if (!_ready) return null;
+  return _tracks.map(t => ({
+    Id: t.id, Name: t.name,
+    AlbumId: t.album_id, Album: t.album,
+    AlbumArtist: t.artist,
+    ImageTags: t.image_tag ? { Primary: t.image_tag } : {},
+    Type: 'Audio',
+    RunTimeTicks: t.runtime || 0,
+  }));
+}

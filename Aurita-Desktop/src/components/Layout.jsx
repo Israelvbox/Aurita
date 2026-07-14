@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { NavLink } from 'react-router-dom';
-import { Home as HomeIcon, Search as SearchIcon, Library as LibraryIcon, Heart, LogOut, RefreshCw, ChevronDown } from 'lucide-react';
+import { useNavigate, NavLink } from 'react-router-dom';
+import { Home as HomeIcon, Search as SearchIcon, Library as LibraryIcon, Heart, Settings as SettingsIcon, LogOut, RefreshCw, ChevronDown } from 'lucide-react';
 import { useAuthStore } from '../store/authStore.js';
 import { usePlayerStore } from '../store/playerStore.js';
 import PlayerBar from './PlayerBar.jsx';
@@ -8,6 +8,7 @@ import logo from '../assets/logo.png';
 
 export default function Layout({ children }) {
   const { user, logout, reconnect } = useAuthStore();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectMsg, setReconnectMsg] = useState(null);
@@ -101,6 +102,10 @@ export default function Layout({ children }) {
                   {reconnecting ? 'Reconectando…' : 'Reconectar con el servidor'}
                 </button>
                 {reconnectMsg && <p className="user-dropdown__msg">{reconnectMsg}</p>}
+                <div className="user-dropdown__divider" />
+                <button className="user-dropdown__item" onClick={() => { setOpen(false); navigate('/ajustes'); }}>
+                  <SettingsIcon size={15} /> Ajustes
+                </button>
                 <div className="user-dropdown__divider" />
                 <button className="user-dropdown__item user-dropdown__item--danger" onClick={logout}>
                   <LogOut size={15} /> Cerrar sesión

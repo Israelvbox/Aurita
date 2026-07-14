@@ -1,10 +1,28 @@
-import { X } from 'lucide-react';
+import { X, GripVertical } from 'lucide-react';
 import { usePlayerStore } from '../store/playerStore.js';
 import { jellyfin } from '../api/jellyfin.js';
 
 export default function QueuePanel({ onClose }) {
-  const { queue, currentIndex, playFromQueueAt, removeFromQueue, autoFilling } = usePlayerStore();
+  const { queue, currentIndex, playFromQueueAt, removeFromQueue, moveInQueue, autoFilling } = usePlayerStore();
   const upcoming = queue.slice(currentIndex + 1);
+
+  function handleDragStart(e, idx) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(idx));
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }
+
+  function handleDrop(e, toIdx) {
+    e.preventDefault();
+    const fromIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+    if (!isNaN(fromIdx) && fromIdx !== toIdx) {
+      moveInQueue(fromIdx, toIdx);
+    }
+  }
 
   return (
     <div className="queue-panel">
@@ -17,6 +35,7 @@ export default function QueuePanel({ onClose }) {
         <>
           <div className="queue-panel__label">Reproduciendo ahora</div>
           <div className="queue-item queue-item--current">
+            <div className="queue-item__drag" />
             <img src={jellyfin.imageUrl(queue[currentIndex].AlbumId || queue[currentIndex].Id, 'Primary', 48)} alt="" />
             <div>
               <div className="queue-item__name">{queue[currentIndex].Name}</div>
@@ -36,7 +55,17 @@ export default function QueuePanel({ onClose }) {
           {upcoming.map((item, i) => {
             const realIndex = currentIndex + 1 + i;
             return (
-              <div key={`${item.Id}-${realIndex}`} className="queue-item">
+              <div
+                key={`${item.Id}-${realIndex}`}
+                className="queue-item"
+                draggable
+                onDragStart={(e) => handleDragStart(e, realIndex)}
+                onDragOver={handleDragOver}
+                onDrop={(e) => handleDrop(e, realIndex)}
+              >
+                <div className="queue-item__drag">
+                  <GripVertical size={13} />
+                </div>
                 <img src={jellyfin.imageUrl(item.AlbumId || item.Id, 'Primary', 48)} alt="" />
                 <button className="queue-item__main" onClick={() => playFromQueueAt(realIndex)}>
                   <div className="queue-item__name">{item.Name}</div>

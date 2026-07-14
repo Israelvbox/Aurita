@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { usePlayerStore } from '../store/playerStore.js';
 import { service } from '../api/service.js';
 import { getWeeklyMixes, getRecommendedPlaylists } from '../store/mixEngine.js';
 import { registerInvalidator } from '../api/cacheManager.js';
+import { useMixViewStore } from '../store/mixViewStore.js';
 import Row from '../components/Row.jsx';
 
 // TTL reducido a 5 minutos: si el usuario crea una playlist,
@@ -24,7 +24,6 @@ registerInvalidator('home', () => {
 
 export default function Home() {
   const navigate  = useNavigate();
-  const playItem  = usePlayerStore((s) => s.playItem);
   const isFresh   = Date.now() - homeCache.fetchedAt < REFRESH_MS;
 
   const [playlists,   setPlaylists]   = useState({ items: isFresh ? homeCache.playlists   || [] : [], loading: !isFresh });
@@ -71,8 +70,9 @@ export default function Home() {
   }); // sin deps: corre en cada render, pero el if lo hace muy barato
 
   function handlePlayMix(m) {
-    const q = m._mixItems || [];
-    if (q.length > 0) playItem(q[0], q);
+    const id = m.Id || m.genre || 'mix';
+    useMixViewStore.getState().open({ id, title: m.Name, items: m._mixItems || [] });
+    navigate(`/mix/${id}`);
   }
 
   return (
