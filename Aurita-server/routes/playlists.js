@@ -41,6 +41,33 @@ router.get('/playlists/:id/items', async (req, res) => {
   }
 });
 
+// GET /playlists/all-items?ids=id1,id2,id3
+// Devuelve todos los track IDs únicos de varias playlists en una sola petición.
+router.get('/playlists/all-items', async (req, res) => {
+  const { token, userId } = authHeaders(req);
+  const ids = (req.query.ids || '').split(',').filter(Boolean);
+  if (ids.length === 0) return res.json({ Items: [] });
+  try {
+    const results = await Promise.all(ids.map(id =>
+      jellyfinRequest(`/Playlists/${id}/Items`, {
+        query: { UserId: userId, Fields: '' },
+        token,
+      }).catch(() => ({ Items: [] }))
+    ));
+    const seen = new Set();
+    const items = [];
+    for (const r of results) {
+      for (const i of r.Items || []) {
+        if (!seen.has(i.Id)) { seen.add(i.Id); items.push(i); }
+      }
+    }
+    res.json({ Items: items, TotalRecordCount: items.length });
+  } catch (err) {
+    console.error(`[Route] Error en ${req.path}:`, err.message);
+    res.status(502).json({ error: err.message });
+  }
+});
+
 // GET /home/playlists?limit=4  — playlists recientes para el inicio
 router.get('/home/playlists', async (req, res) => {
   const { token, userId } = authHeaders(req);

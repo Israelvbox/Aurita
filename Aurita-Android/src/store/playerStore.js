@@ -5,6 +5,8 @@ import { service } from '../api/service.js';
 import { historyStore, cacheStore } from '../db/storage.js';
 import { getEffectiveGenres } from '../api/genreIndex.js';
 import { useOfflineStore } from './offlineStore.js';
+import { useNetworkStatsStore } from './networkStatsStore.js';
+import { useSettingsStore } from './settingsStore.js';
 
 const AuritaPlayer = registerPlugin('AuritaPlayer');
 
@@ -13,6 +15,11 @@ const MAX_PRELOADED = 200;
 const QUEUE_SAVE_KEY = 'player_queue';
 
 const preloadedIds = new Set();
+let _ignoreStateEvents = false;
+let _sleepTimerId = null;
+
+export function ignoreStateEvents(v) { _ignoreStateEvents = v; }
+
 function markPreloaded(id) {
   if (preloadedIds.size >= MAX_PRELOADED) {
     const first = preloadedIds.values().next().value;
@@ -47,8 +54,6 @@ const offlineUrlCache = new Map();
 async function resolveStreamUrl(item) {
   if (!item) return '';
   const id = item.Id;
-  const cached = offlineUrlCache.get(id);
-  if (cached) return cached;
   try {
     const result = await AuritaPlayer.isDownloaded({ itemId: id });
     if (result.downloaded && result.path) {
@@ -58,7 +63,10 @@ async function resolveStreamUrl(item) {
     }
   } catch {}
   if (useOfflineStore.getState().isOffline) return '';
-  const url = jellyfin.streamUrl(id);
+  const cached = offlineUrlCache.get(id);
+  if (cached) return cached;
+  const bitrate = useSettingsStore.getState().audioBitrate;
+  const url = jellyfin.streamUrl(id, bitrate);
   offlineUrlCache.set(id, url);
   return url;
 }
@@ -110,8 +118,12 @@ export const usePlayerStore = create((set, get) => {
   let _markedPlayed = new Set();
   let _stateEndedHandled = false;
   let _autoFillPromise = null;
+  let _lastAudioPos = 0;
+  let _lastAudioId = null;
+  const KBPS_128 = 16 * 1024; // 128 kbps → bytes per second
 
-  AuritaPlayer.addListener('stateChanged', (data) => {
+  AuritaPlayer.addListener('stateChanged', async (data) => {
+    if (_ignoreStateEvents) return;
     const prevIndex = get().currentIndex;
     const isNewTrack = data.currentIndex >= 0 && data.currentIndex !== prevIndex;
 
@@ -127,6 +139,26 @@ export const usePlayerStore = create((set, get) => {
       _stateEndedHandled = false;
     }
     set(updates);
+
+    // Track estimated audio bytes
+    const curTrack = get().queue[get().currentIndex];
+    const curId = curTrack?.Id;
+    if (data.isPlaying && data.position > 0 && curId) {
+      if (curId !== _lastAudioId) {
+        _lastAudioPos = data.position;
+        _lastAudioId = curId;
+      } else {
+        const delta = data.position - _lastAudioPos;
+        if (delta > 0 && delta < 30) {
+          const bytes = Math.round(delta * KBPS_128);
+          const ns = useNetworkStatsStore.getState();
+          ns.addBytes(bytes, ns.lastConnectionType);
+        }
+        _lastAudioPos = data.position;
+      }
+    } else {
+      _lastAudioPos = 0;
+    }
 
     const state = get();
     const current = state.queue[state.currentIndex];
@@ -149,15 +181,30 @@ export const usePlayerStore = create((set, get) => {
       const nextIdx = getNextIndex(queue, currentIndex, shuffle, repeatMode);
 
       if (nextIdx >= 0 && nextIdx < queue.length) {
+        try {
+          const state = await AuritaPlayer.getState();
+          if (state.mediaItemCount > 0 && !state.ended && state.currentIndex >= 0) {
+            set({ currentIndex: state.currentIndex, isPlaying: state.isPlaying, currentTime: state.position });
+            return;
+          }
+        } catch {}
         get().playItem(queue[nextIdx], queue, queueSource);
       } else if (nextIdx === -1) {
-        get()._maybeAutoFill().then(() => {
+        if (_autoFillPromise) {
+          await _autoFillPromise;
           const st = get();
           const idx = getNextIndex(st.queue, st.currentIndex, st.shuffle, st.repeatMode);
           if (idx >= 0 && idx < st.queue.length) {
             get().playItem(st.queue[idx], st.queue, st.queueSource);
           }
-        });
+        } else {
+          await get()._maybeAutoFill();
+          const st = get();
+          const idx = getNextIndex(st.queue, st.currentIndex, st.shuffle, st.repeatMode);
+          if (idx >= 0 && idx < st.queue.length) {
+            get().playItem(st.queue[idx], st.queue, st.queueSource);
+          }
+        }
       }
     }
 
@@ -190,7 +237,9 @@ export const usePlayerStore = create((set, get) => {
   if (typeof window !== 'undefined') {
     window.addEventListener('app:resumed', () => {
       if (get().currentIndex >= 0) {
-        get().restoreQueue();
+        ignoreStateEvents(true);
+        get().syncFromPlayer();
+        setTimeout(() => ignoreStateEvents(false), 500);
       }
     });
   }
@@ -207,6 +256,32 @@ export const usePlayerStore = create((set, get) => {
     queueSource: 'other',
     _autoFillSourceId: null,
     _seekOffset: 0,
+    sleepTimer: 0,
+
+    setSleepTimer(minutes) {
+      if (_sleepTimerId) { clearTimeout(_sleepTimerId); _sleepTimerId = null; }
+      if (minutes <= 0) { set({ sleepTimer: 0 }); return; }
+      set({ sleepTimer: minutes });
+      _sleepTimerId = setTimeout(() => {
+        set({ sleepTimer: 0 });
+        AuritaPlayer.pause().catch(() => {});
+        _sleepTimerId = null;
+      }, minutes * 60 * 1000);
+    },
+
+    async syncFromPlayer() {
+      try {
+        const state = await AuritaPlayer.getState();
+        if (state.currentIndex >= 0 && state.mediaItemCount > 0) {
+          set({
+            currentIndex: state.currentIndex,
+            isPlaying: state.isPlaying,
+            currentTime: state.position,
+            duration: state.duration > 0 ? state.duration : get().duration,
+          });
+        }
+      } catch {}
+    },
 
     async restoreQueue() {
       const saved = await cacheStore.get('player', QUEUE_SAVE_KEY);
@@ -267,12 +342,19 @@ export const usePlayerStore = create((set, get) => {
       persistQueue(get());
     },
 
+    clearQueue() {
+      AuritaPlayer.clearQueue().catch(() => {});
+      set({ queue: [], currentIndex: -1, isPlaying: false, currentTime: 0, duration: 0, queueSource: 'other', _autoFillSourceId: null });
+      cacheStore.delete('player', QUEUE_SAVE_KEY).catch(() => {});
+    },
+
     async playItem(item, queue = null, source = 'other') {
-      const newQueue = queue || [item];
+      const isRandom = source === 'random';
+      const newQueue = isRandom ? [item] : (queue || [item]);
       const index = newQueue.findIndex((i) => i.Id === item.Id);
       const idx = index === -1 ? 0 : index;
       const duration = item.RunTimeTicks ? Math.round(item.RunTimeTicks / 10_000_000) : 0;
-      const repeatMode = source === 'list' ? 'all' : get().repeatMode;
+      const repeatMode = source === 'list' ? 'all' : (isRandom ? 'off' : get().repeatMode);
       set({ queue: newQueue, currentIndex: idx, duration, repeatMode, queueSource: source, _autoFillSourceId: null, _seekOffset: 0 });
 
       persistQueue(get());
@@ -291,6 +373,8 @@ export const usePlayerStore = create((set, get) => {
           itemId: item.Id,
           name: item.Name,
           artist: item.AlbumArtist || (item.Artists || [])[0] || '',
+          albumId: item.AlbumId || '',
+          imageTag: item.ImageTags?.Primary || '',
           genres,
         });
       });
@@ -412,7 +496,9 @@ export const usePlayerStore = create((set, get) => {
     async _maybeAutoFill() {
       if (_autoFillPromise) return _autoFillPromise;
 
-      const { queue, currentIndex, autoFilling, _autoFillSourceId } = get();
+      const { queue, currentIndex, autoFilling, _autoFillSourceId, queueSource } = get();
+      if (queueSource === 'list') return;
+
       const remaining = queue.length - 1 - currentIndex;
       const current = queue[currentIndex];
       if (!current || autoFilling || remaining > 4) return;
@@ -421,9 +507,24 @@ export const usePlayerStore = create((set, get) => {
       set({ autoFilling: true, _autoFillSourceId: current.Id });
       _autoFillPromise = (async () => {
         try {
-          const res = await service.getInstantMix(current.Id, 30);
           const existingIds = new Set(queue.map((i) => i.Id));
-          let fresh = (res.Items || []).filter((i) => !existingIds.has(i.Id));
+          let fresh;
+
+          if (queueSource === 'random') {
+            const res = await jellyfin.request(`/Users/${jellyfin.userId}/Items`, {
+              query: {
+                IncludeItemTypes: 'Audio',
+                Recursive: true,
+                SortBy: 'Random',
+                Limit: 30,
+                Fields: 'Genres,AlbumArtist,ArtistItems,UserData,RunTimeTicks',
+              },
+            });
+            fresh = (res.Items || []).filter((i) => !existingIds.has(i.Id));
+          } else {
+            const res = await service.getInstantMix(current.Id, 30);
+            fresh = (res.Items || []).filter((i) => !existingIds.has(i.Id));
+          }
 
           if (fresh.length === 0) return;
 

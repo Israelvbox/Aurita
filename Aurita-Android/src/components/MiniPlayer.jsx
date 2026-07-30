@@ -1,13 +1,16 @@
+import { useState } from 'react';
 import { Play, Pause, SkipForward, Heart } from 'lucide-react';
 import { usePlayerStore } from '../store/playerStore.js';
 import { useFavoritesStore } from '../store/favoritesStore.js';
 import { jellyfin } from '../api/jellyfin.js';
 import CachedImage from './CachedImage.jsx';
+import { colorFor } from '../utils.js';
 
 export default function MiniPlayer({ onExpand }) {
   const { queue, currentIndex, isPlaying, togglePlay, next } = usePlayerStore();
   const favoriteIds     = useFavoritesStore((s) => s.ids);
   const toggleFavorite  = useFavoritesStore((s) => s.toggle);
+  const [imgFailed, setImgFailed] = useState(false);
 
   const current = currentIndex >= 0 ? queue[currentIndex] : null;
   if (!current) return null;
@@ -17,7 +20,14 @@ export default function MiniPlayer({ onExpand }) {
   return (
     <div className="mini-player" onClick={onExpand}>
       <div className="mini-player__track">
-        <CachedImage src={jellyfin.imageUrl(current.AlbumId || current.Id, 'Primary', 56)} alt="" className="mini-player__art" />
+        {imgFailed ? (
+          <div className="mini-player__art mini-player__art--placeholder" style={{ background: colorFor(current.Name || '') }}>
+            {(current.Name || '?')[0].toUpperCase()}
+          </div>
+        ) : (
+          <CachedImage src={jellyfin.imageUrl(current.AlbumId || current.Id, 'Primary', 56)}
+            alt="" className="mini-player__art" onError={() => setImgFailed(true)} />
+        )}
         <div className="mini-player__info">
           <span className="mini-player__name">{current.Name}</span>
           <span className="mini-player__artist">{current.AlbumArtist}</span>

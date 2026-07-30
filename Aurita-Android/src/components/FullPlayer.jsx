@@ -2,7 +2,7 @@ import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Heart, ListPlus, Shuffle, SkipBack, Play, Pause,
-  SkipForward, Repeat, Repeat1, ListMusic, Settings,
+  SkipForward, Repeat, Repeat1, ListMusic, Settings, Timer, FileText, X,
 } from 'lucide-react';
 import { usePlayerStore } from '../store/playerStore.js';
 import { useFavoritesStore } from '../store/favoritesStore.js';
@@ -14,29 +14,25 @@ import VinylRecord from './VinylRecord.jsx';
 import AddToPlaylistModal from './AddToPlaylistModal.jsx';
 import QueueSheet from './QueueSheet.jsx';
 import LyricsDisplay from './LyricsDisplay.jsx';
-
-function formatTime(s) {
-  if (!s || Number.isNaN(s)) return '0:00';
-  return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
-}
+import { formatDuration } from '../utils.js';
 
 export default function FullPlayer({ visible, onClose }) {
   const navigate = useNavigate();
   const {
     queue, currentIndex, isPlaying, currentTime, duration,
-    repeatMode, shuffle,
+    repeatMode, shuffle, sleepTimer,
     togglePlay, next, prev, seekTo,
-    toggleRepeat, toggleShuffle,
+    toggleRepeat, toggleShuffle, setSleepTimer,
   } = usePlayerStore();
 
   const favoriteIds    = useFavoritesStore((s) => s.ids);
   const toggleFavorite = useFavoritesStore((s) => s.toggle);
   const refreshMembership = usePlaylistMembershipStore((s) => s.refresh);
   const vinylMode = useSettingsStore((s) => s.vinylMode);
-  const showLyrics = useSettingsStore((s) => s.showLyrics);
 
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [showQueue,   setShowQueue]   = useState(false);
+  const [showLyricsOverlay, setShowLyricsOverlay] = useState(false);
 
   const touchStartY = useRef(null);
   const touchStartX = useRef(null);
@@ -92,16 +88,6 @@ export default function FullPlayer({ visible, onClose }) {
           </div>
 
           <div className="full-player__bottom">
-            {showLyrics && (
-              <LyricsDisplay
-                trackId={current.Id}
-                trackName={current.Name}
-                artistName={current.AlbumArtist || (current.Artists || [])[0] || ''}
-                duration={duration}
-                currentTime={currentTime}
-                isPlaying={isPlaying}
-              />
-            )}
             <div className="full-player__info-row">
               <div className="full-player__meta">
                 <div className="full-player__title">{current.Name}</div>
@@ -129,8 +115,8 @@ export default function FullPlayer({ visible, onClose }) {
                 className="fp-seek" style={{ '--p': `${pct}%` }}
               />
               <div className="full-player__times">
-                <span>{formatTime(currentTime)}</span>
-                <span>{formatTime(duration)}</span>
+                <span>{formatDuration(currentTime)}</span>
+                <span>{formatDuration(duration)}</span>
               </div>
             </div>
 
@@ -158,16 +144,51 @@ export default function FullPlayer({ visible, onClose }) {
               <button className="fp-btn" onClick={() => setShowAddMenu(true)}>
                 <ListPlus size={22} />
               </button>
+              <button className={`fp-btn ${showLyricsOverlay ? 'fp-btn--accent' : ''}`} onClick={() => setShowLyricsOverlay(true)}>
+                <FileText size={20} />
+              </button>
               <button className={`fp-btn ${showQueue ? 'fp-btn--accent' : ''}`} onClick={() => setShowQueue(true)}>
                 <ListMusic size={22} />
               </button>
               <button className="fp-btn" onClick={() => { onClose(); navigate('/ajustes'); }}>
                 <Settings size={20} />
               </button>
+              <button className={`fp-btn ${sleepTimer > 0 ? 'fp-btn--accent' : ''}`}
+                onClick={() => {
+                  if (sleepTimer > 0) { setSleepTimer(0); return; }
+                  const next = sleepTimer === 15 ? 30 : sleepTimer === 30 ? 60 : 15;
+                  setSleepTimer(next);
+                }}
+                title={sleepTimer > 0 ? `${sleepTimer} min restantes` : 'Temporizador'}>
+                <Timer size={18} />
+                {sleepTimer > 0 && <span className="fp-btn__badge">{sleepTimer}</span>}
+              </button>
             </div>
           </div>
         </div>
       </div>
+
+      {showLyricsOverlay && (
+        <div className="modal-overlay lyrics-overlay" onClick={() => setShowLyricsOverlay(false)}>
+          <div className="lyrics-fullscreen" onClick={(e) => e.stopPropagation()}>
+            <div className="lyrics-fullscreen__header">
+              <h2 className="lyrics-fullscreen__title">{current.Name}</h2>
+              <button className="lyrics-fullscreen__close" onClick={() => setShowLyricsOverlay(false)}>
+                <X size={22} />
+              </button>
+            </div>
+            <LyricsDisplay
+              trackId={current.Id}
+              trackName={current.Name}
+              artistName={current.AlbumArtist || (current.Artists || [])[0] || ''}
+              duration={duration}
+              currentTime={currentTime}
+              isPlaying={isPlaying}
+              fullscreen
+            />
+          </div>
+        </div>
+      )}
 
       {showAddMenu && (
         <AddToPlaylistModal

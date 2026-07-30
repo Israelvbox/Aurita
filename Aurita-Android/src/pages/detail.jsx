@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { ArrowLeft, Play, Heart, Trash2, Pencil, X, Shuffle, Download, CheckCircle } from 'lucide-react';
+import { ArrowLeft, Play, Heart, Trash2, Pencil, X, Shuffle, Download, CheckCircle, RefreshCw, Plus, Check } from 'lucide-react';
 import { registerPlugin } from '@capacitor/core';
 const AuritaPlayer = registerPlugin('AuritaPlayer');
 import { jellyfin } from '../api/jellyfin.js';
@@ -8,12 +8,18 @@ import { service } from '../api/service.js';
 import { fetchDetail, getCachedDetail, getCachedDetailSync, setDetailCache, invalidateDetail } from '../api/detailCache.js';
 import { onPlaylistDeleted, onPlaylistCreated } from '../api/cacheManager.js';
 import { usePlayerStore, warmTrack } from '../store/playerStore.js';
+import { useToastStore } from '../store/toastStore.js';
+import ConfirmModal from '../components/ConfirmModal.jsx';
 import { useFavoritesStore } from '../store/favoritesStore.js';
 import { usePlaylistMembershipStore } from '../store/playlistMembershipStore.js';
+import { useOfflineStore } from '../store/offlineStore.js';
+import { useSettingsStore } from '../store/settingsStore.js';
 import PlaylistFormModal from '../components/PlaylistFormModal.jsx';
 import CachedImage from '../components/CachedImage.jsx';
 import { fetchCachedImage } from '../api/imageCache.js';
+import { prefetchLyrics } from '../api/lyricsCache.js';
 import { cacheStore } from '../db/storage.js';
+import { formatTotalDuration } from '../utils.js';
 
 // ── Favoritos ────────────────────────────────────────────────
 export function Favorites() {
@@ -53,7 +59,7 @@ export function Favorites() {
       <div className="page-header"><h1 className="page-title">Me gusta</h1></div>
       {tracks.length > 0 && (
         <button className="play-all-btn" onClick={() => playItem(tracks[0], tracks, 'list')}>
-          <Play size={18} fill="currentColor" /> Reproducir todo
+          <Play size={18} fill="currentColor" /> Reproducir todo · {formatTotalDuration(tracks.reduce((sum, t) => sum + ((t.RunTimeTicks || 0) / 10_000_000), 0))}
         </button>
       )}
       {tracks.length === 0 ? <p className="muted page-pad">Marca canciones con el corazón y aparecerán aquí.</p> :
@@ -91,9 +97,16 @@ export function PlaylistDetail() {
   const [tracks,   setTracks]   = useState(() => getCachedDetailSync(id)?.tracks ?? []);
   const [loading,  setLoading]  = useState(() => !getCachedDetailSync(id));
   const [showEdit, setShowEdit] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [downloadedIds, setDownloadedIds] = useState(new Set());
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [singleDownloading, setSingleDownloading] = useState(new Set());
+  const [suggestions, setSuggestions] = useState([]);
+  const [suggesting, setSuggesting] = useState(false);
+  const [addedIds, setAddedIds] = useState(new Set());
+  const toast = useToastStore((s) => s.show);
+  const downloadBitrate = useSettingsStore((s) => s.downloadBitrate);
 
   useEffect(() => {
     AuritaPlayer.getDownloadedIds().then((r) => {
@@ -104,6 +117,40 @@ export function PlaylistDetail() {
   const allDownloaded = tracks.length > 0 && tracks.every((t) => downloadedIds.has(t.Id));
   const someDownloaded = tracks.some((t) => downloadedIds.has(t.Id));
 
+  const streamUrlWithBitrate = useCallback((itemId) => {
+    return jellyfin.streamUrl(itemId, downloadBitrate);
+  }, [downloadBitrate]);
+
+  const cacheTrackAssets = useCallback((track) => {
+    const artUrl = jellyfin.imageUrl(track.AlbumId || track.Id, 'Primary', 512);
+    fetchCachedImage(artUrl).catch(() => {});
+    const artist = track.AlbumArtist || (track.Artists || [])[0] || '';
+    prefetchLyrics(track.Id, track.Name, artist);
+  }, []);
+
+  const downloadSingleTrack = useCallback(async (track) => {
+    if (singleDownloading.has(track.Id) || downloadedIds.has(track.Id)) return;
+    setSingleDownloading((prev) => new Set(prev).add(track.Id));
+    try {
+      await AuritaPlayer.downloadTrack({
+        url: streamUrlWithBitrate(track.Id),
+        itemId: track.Id,
+        onProgress: false,
+      });
+      setDownloadedIds((prev) => new Set(prev).add(track.Id));
+      cacheTrackAssets(track);
+      useOfflineStore.getState().refreshDownloadedIds();
+    } catch (err) {
+      console.warn('[Aurita] Error descargando', track.Name, err);
+    } finally {
+      setSingleDownloading((prev) => {
+        const next = new Set(prev);
+        next.delete(track.Id);
+        return next;
+      });
+    }
+  }, [singleDownloading, downloadedIds, streamUrlWithBitrate, cacheTrackAssets]);
+
   const handleDownloadAll = useCallback(async () => {
     if (downloading || tracks.length === 0) return;
     setDownloading(true);
@@ -113,20 +160,22 @@ export function PlaylistDetail() {
     for (const track of toDownload) {
       try {
         await AuritaPlayer.downloadTrack({
-          url: jellyfin.streamUrl(track.Id),
+          url: streamUrlWithBitrate(track.Id),
           itemId: track.Id,
           onProgress: false,
         });
         completed++;
         setDownloadProgress(Math.round((completed / toDownload.length) * 100));
         setDownloadedIds((prev) => new Set(prev).add(track.Id));
+        cacheTrackAssets(track);
       } catch (err) {
         console.warn('[Aurita] Error descargando', track.Name, err);
       }
     }
     setDownloading(false);
     setDownloadProgress(100);
-    // Guardar en caché offline
+    useOfflineStore.getState().refreshDownloadedIds();
+    toast('Playlist descargada', 'success');
     if (info) {
       await cacheStore.set('offline_playlist', id, { info, tracks });
       const list = await cacheStore.get('offline_playlist', 'list') || [];
@@ -136,7 +185,7 @@ export function PlaylistDetail() {
         await cacheStore.set('offline_playlist', 'list', list);
       }
     }
-  }, [tracks, downloadedIds, downloading, info, id]);
+  }, [tracks, downloadedIds, downloading, info, id, streamUrlWithBitrate]);
 
   async function load({ forceFresh=false }={}) {
     if (!forceFresh) {
@@ -170,7 +219,8 @@ export function PlaylistDetail() {
     jellyfin.removeFromPlaylist(id, [t.PlaylistItemId]).then(() => {
       setDetailCache(id, {info, tracks: nt});
       refreshMembership();
-      invalidateDetail(id); // notifica al cacheManager
+      invalidateDetail(id);
+      toast('Canción eliminada de la playlist', 'info');
     }).catch(() => load({forceFresh:true}));
   }
 
@@ -179,6 +229,40 @@ export function PlaylistDetail() {
     invalidateDetail(id);
     onPlaylistCreated(); // invalida Home y Library (el nombre cambió)
     await load({ forceFresh: true });
+  }
+
+  async function fetchSuggestions() {
+    if (tracks.length === 0) return;
+    setSuggesting(true);
+    try {
+      const seed = tracks[Math.floor(Math.random() * tracks.length)];
+      const res = await jellyfin.getInstantMix(seed.Id, 15);
+      const existing = new Set(tracks.map(t => t.Id));
+      const items = (res.Items || [])
+        .filter(t => !existing.has(t.Id))
+        .sort(() => Math.random() - 0.5)
+        .slice(0, 6);
+      setSuggestions(items);
+    } catch {
+      setSuggestions([]);
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!loading && tracks.length > 0) fetchSuggestions();
+  }, [loading]); // eslint-disable-line
+
+  async function handleAddToPlaylist(trackId) {
+    if (addedIds.has(trackId)) return;
+    try {
+      await jellyfin.addToPlaylist(id, [trackId]);
+      setAddedIds(prev => new Set(prev).add(trackId));
+      invalidateDetail(id);
+      onPlaylistCreated();
+      toast('Canción agregada a la playlist', 'success');
+    } catch {}
   }
 
   if (loading) return <div className="page"><p className="muted page-pad">Cargando…</p></div>;
@@ -192,7 +276,7 @@ export function PlaylistDetail() {
         <div className="detail-hero__overlay">
           <span className="detail-kind">{isPlaylist ? 'Playlist' : 'Álbum'}</span>
           <h1 className="detail-hero__title">{info?.Name}</h1>
-          <p className="muted">{tracks.length} canciones</p>
+          <p className="muted">{tracks.length} canciones · {formatTotalDuration(tracks.reduce((sum, t) => sum + ((t.RunTimeTicks || 0) / 10_000_000), 0))}</p>
         </div>
       </div>
 
@@ -209,10 +293,7 @@ export function PlaylistDetail() {
         {isPlaylist && (
           <>
             <button className="icon-pill" onClick={() => setShowEdit(true)}><Pencil size={18}/></button>
-            <button className="icon-pill icon-pill--danger" onClick={async () => {
-              if (!confirm(`¿Borrar "${info?.Name}"?`)) return;
-              await jellyfin.deletePlaylist(id); refreshMembership(); onPlaylistDeleted(id); navigate('/biblioteca');
-            }}><Trash2 size={18}/></button>
+            <button className="icon-pill icon-pill--danger" onClick={() => setDeleteConfirm(true)}><Trash2 size={18}/></button>
           </>
         )}
       </div>
@@ -232,6 +313,17 @@ export function PlaylistDetail() {
                 onClick={(e)=>{e.stopPropagation();toggleFav(t.Id);}}>
                 <Heart size={18} fill={fav?'currentColor':'none'} />
               </button>
+              {downloadedIds.has(t.Id) ? (
+                <span className="track-row__action" style={{ color: 'var(--success)' }} title="Descargada">
+                  <Check size={16} />
+                </span>
+              ) : singleDownloading.has(t.Id) ? (
+                <span className="track-row__action muted" style={{ fontSize: 11 }}>…</span>
+              ) : (
+                <button className="track-row__action" onClick={(e)=>{e.stopPropagation();downloadSingleTrack(t);}} title="Descargar">
+                  <Download size={14} />
+                </button>
+              )}
               {isPlaylist && (
                 <button className="track-row__remove" onClick={(e)=>{e.stopPropagation();handleRemove(t);}}>
                   <X size={16} />
@@ -242,9 +334,71 @@ export function PlaylistDetail() {
         })}
       </div>
 
+      {isPlaylist && suggestions.length > 0 && (
+        <div className="suggestions-section">
+          <div className="suggestions-header">
+            <h2 className="section-title">Sugerencias</h2>
+            <button className="icon-pill" onClick={fetchSuggestions} disabled={suggesting} title="Refrescar sugerencias">
+              <RefreshCw size={16} className={suggesting ? 'spin' : ''} />
+            </button>
+          </div>
+          <div className="track-list">
+            {suggestions.map((t) => (
+              <div key={t.Id} className={`track-row ${t.Id===currentId?'track-row--active':''}`}
+                onClick={() => playItem(t, suggestions, 'list')} onTouchStart={() => warmTrack(t.Id)}>
+                <CachedImage src={jellyfin.imageUrl(t.AlbumId||t.Id,'Primary',56)} alt="" className="track-row__art" />
+                <div className="track-row__info">
+                  <div className="track-row__name">{t.Name}</div>
+                  <div className="track-row__artist muted">{t.AlbumArtist}</div>
+                </div>
+                <button className={`track-row__heart ${favoriteIds.has(t.Id)?'track-row__heart--active':''}`}
+                  onClick={(e)=>{e.stopPropagation();toggleFav(t.Id);}}>
+                  <Heart size={18} fill={favoriteIds.has(t.Id)?'currentColor':'none'} />
+                </button>
+                <button className={`track-row__add ${addedIds.has(t.Id)?'track-row__add--done':''}`}
+                  onClick={(e)=>{e.stopPropagation();handleAddToPlaylist(t.Id);}}
+                  disabled={addedIds.has(t.Id)}
+                  title={addedIds.has(t.Id) ? 'Agregada' : 'Agregar a esta playlist'}>
+                  {addedIds.has(t.Id) ? <Check size={18} /> : <Plus size={18} />}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {isPlaylist && !suggesting && suggestions.length === 0 && tracks.length > 0 && (
+        <div className="suggestions-section">
+          <div className="suggestions-header">
+            <h2 className="section-title">Sugerencias</h2>
+            <button className="icon-pill" onClick={fetchSuggestions} title="Buscar sugerencias">
+              <RefreshCw size={16} />
+            </button>
+          </div>
+          <p className="muted page-pad">No se encontraron sugerencias. Presioná el botón para intentar de nuevo.</p>
+        </div>
+      )}
+
       {showEdit && (
         <PlaylistFormModal mode="edit" initialName={info?.Name}
           onClose={() => setShowEdit(false)} onSubmit={handleEdit} />
+      )}
+      {deleteConfirm && (
+        <ConfirmModal
+          title="Borrar playlist"
+          message={`¿Borrar "${info?.Name}"?`}
+          confirmLabel="Borrar"
+          cancelLabel="Cancelar"
+          confirmDanger
+          onConfirm={async () => {
+            await jellyfin.deletePlaylist(id);
+            refreshMembership();
+            onPlaylistDeleted(id);
+            toast('Playlist eliminada', 'error');
+            navigate('/biblioteca');
+          }}
+          onCancel={() => setDeleteConfirm(false)}
+        />
       )}
     </div>
   );
@@ -277,15 +431,18 @@ export function ArtistDetail() {
       setAlbums(albumsRes.Items || []);
       setTopSongs(songsRes.Items || []);
       setLoading(false);
-    });
+    }).catch(() => setLoading(false));
     return () => { cancelled = true; };
   }, [id]); // eslint-disable-line
 
   const backdropUrl = jellyfin.imageUrl(id, 'Backdrop', 800);
+  const primaryUrl = jellyfin.imageUrl(id, 'Primary', 400);
   useEffect(() => {
     let cancelled = false;
     fetchCachedImage(backdropUrl).then((url) => {
       if (!cancelled && url) setBackdrop(url);
+    }).catch(() => {
+      if (!cancelled) fetchCachedImage(primaryUrl).then((url) => { if (!cancelled && url) setBackdrop(url); }).catch(() => {});
     });
     return () => { cancelled = true; };
   }, [backdropUrl]); // eslint-disable-line
@@ -303,11 +460,8 @@ export function ArtistDetail() {
       <div className="detail-actions-bar">
         {topSongs.length > 0 && (
           <>
-            <button className="fab" onClick={() => playItem(topSongs[0], topSongs)}><Play size={22} fill="currentColor" /></button>
-            <button className="icon-pill" onClick={() => {
-              const s = [...topSongs].sort(()=>Math.random()-.5);
-              playItem(s[0], s);
-            }}><Shuffle size={18}/></button>
+            <button className="fab" onClick={() => playItem(topSongs[0], null, 'random')}><Play size={22} fill="currentColor" /></button>
+            <button className="icon-pill" onClick={() => playItem(topSongs[0], null, 'random')}><Shuffle size={18}/></button>
           </>
         )}
       </div>
@@ -318,7 +472,7 @@ export function ArtistDetail() {
           <div className="track-list">
             {topSongs.map((t, i) => (
               <div key={t.Id} className={`track-row ${t.Id===currentId?'track-row--active':''}`}
-                onClick={() => playItem(t, topSongs)} onTouchStart={() => warmTrack(t.Id)}>
+                onClick={() => playItem(t, null, 'random')} onTouchStart={() => warmTrack(t.Id)}>
                 <span className="track-row__idx">{i+1}</span>
                 <div className="track-row__info">
                   <div className="track-row__name">{t.Name}</div>

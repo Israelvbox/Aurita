@@ -22,6 +22,8 @@ export const useSettingsStore = create((set, get) => {
   return {
     vinylMode: persisted.vinylMode ?? true,
     showLyrics: persisted.showLyrics ?? false,
+    audioBitrate: persisted.audioBitrate ?? 0,
+    downloadBitrate: persisted.downloadBitrate ?? 64000,
 
     setVinylMode(v) {
       set({ vinylMode: v });
@@ -31,6 +33,16 @@ export const useSettingsStore = create((set, get) => {
     setShowLyrics(v) {
       set({ showLyrics: v });
       save({ ...get(), showLyrics: v });
+    },
+
+    setAudioBitrate(v) {
+      set({ audioBitrate: v });
+      save({ ...get(), audioBitrate: v });
+    },
+
+    setDownloadBitrate(v) {
+      set({ downloadBitrate: v });
+      save({ ...get(), downloadBitrate: v });
     },
   };
 });

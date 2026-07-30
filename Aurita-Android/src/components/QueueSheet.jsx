@@ -1,10 +1,28 @@
-import { X, GripVertical } from 'lucide-react';
+import { X, GripVertical, Trash2 } from 'lucide-react';
 import { usePlayerStore } from '../store/playerStore.js';
 import { jellyfin } from '../api/jellyfin.js';
+import { useToastStore } from '../store/toastStore.js';
+import { formatDuration, formatTotalDuration } from '../utils.js';
+
+function totalDuration(queue, startIdx) {
+  let total = 0;
+  for (let i = startIdx; i < queue.length; i++) {
+    const ticks = queue[i]?.RunTimeTicks;
+    if (ticks) total += ticks / 10_000_000;
+  }
+  return total;
+}
 
 export default function QueueSheet({ visible, onClose }) {
-  const { queue, currentIndex, playFromQueueAt, removeFromQueue, moveInQueue } = usePlayerStore();
+  const { queue, currentIndex, playFromQueueAt, removeFromQueue, moveInQueue, clearQueue } = usePlayerStore();
+  const toast = useToastStore((s) => s.show);
   const upcoming = queue.slice(currentIndex + 1);
+  const elapsed = currentIndex >= 0 ? queue.slice(0, currentIndex + 1) : [];
+
+  function handleClear() {
+    clearQueue();
+    toast('Cola limpiada', 'info');
+  }
 
   function handleDragStart(e, idx) {
     e.dataTransfer.effectAllowed = 'move';
@@ -30,7 +48,15 @@ export default function QueueSheet({ visible, onClose }) {
         <div className="bottom-sheet__bar" onClick={onClose} />
         <div className="bottom-sheet__header">
           <h3>Cola de reproducción</h3>
-          <button className="sheet-close" onClick={onClose}><X size={20} /></button>
+          <div className="sheet-header-actions">
+            <span className="sheet-duration">{formatTotalDuration(totalDuration(queue, currentIndex + 1))}</span>
+            {queue.length > 0 && (
+              <button className="sheet-btn sheet-btn--danger" onClick={handleClear} title="Limpiar cola">
+                <Trash2 size={16} />
+              </button>
+            )}
+            <button className="sheet-close" onClick={onClose}><X size={20} /></button>
+          </div>
         </div>
 
         {currentIndex >= 0 && queue[currentIndex] && (
@@ -43,6 +69,9 @@ export default function QueueSheet({ visible, onClose }) {
                 <div className="queue-item__name">{queue[currentIndex].Name}</div>
                 <div className="queue-item__artist">{queue[currentIndex].AlbumArtist}</div>
               </div>
+              {queue[currentIndex].RunTimeTicks && (
+                <span className="queue-item__time">{formatDuration(queue[currentIndex].RunTimeTicks / 10_000_000)}</span>
+              )}
             </div>
           </>
         )}
@@ -73,6 +102,9 @@ export default function QueueSheet({ visible, onClose }) {
                     <div className="queue-item__name">{item.Name}</div>
                     <div className="queue-item__artist">{item.AlbumArtist}</div>
                   </button>
+                  {item.RunTimeTicks && (
+                    <span className="queue-item__time">{formatDuration(item.RunTimeTicks / 10_000_000)}</span>
+                  )}
                   <button className="sheet-close" onClick={() => removeFromQueue(realIdx)}>
                     <X size={16} />
                   </button>

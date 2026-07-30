@@ -142,12 +142,35 @@ export const historyStore = {
         if (cursor) {
           const v = cursor.value;
           if ((v.genres || []).includes(genre)) {
-            items[v.item_id] = items[v.item_id] || { ...v, plays: 0 };
-            items[v.item_id].plays += 1;
+            items[v.itemId] = items[v.itemId] || { ...v, plays: 0 };
+            items[v.itemId].plays += 1;
           }
           cursor.continue();
         } else {
           resolve(Object.values(items).sort((a, b) => b.plays - a.plays).slice(0, limit));
+        }
+      };
+      tx.onerror = () => reject(tx.error);
+    });
+  },
+  async getTopTracks(limit = 20) {
+    if (isElectron) return window.aurita.history.getTopTracks(limit);
+    const db = await openIdb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('listen_history', 'readonly');
+      const counts = {};
+      tx.objectStore('listen_history').openCursor().onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const v = cursor.value;
+          const id = v.itemId;
+          if (id) {
+            counts[id] = counts[id] || { ...v, plays: 0 };
+            counts[id].plays += 1;
+          }
+          cursor.continue();
+        } else {
+          resolve(Object.values(counts).sort((a, b) => b.plays - a.plays).slice(0, limit));
         }
       };
       tx.onerror = () => reject(tx.error);

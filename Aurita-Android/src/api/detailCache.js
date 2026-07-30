@@ -4,14 +4,53 @@ import { registerInvalidator, onPlaylistTracksChanged } from './cacheManager.js'
 
 const TTL = 10 * 60 * 1000;
 
-// Caché en memoria (módulo): acceso síncrono e instantáneo.
 const _memCache = new Map();
+const _pendingFetches = new Map();
+
+const PAGE_SIZE = 200;
+
+async function fetchAllPlaylistItems(id) {
+  let allItems = [];
+  let startIndex = 0;
+  let total = null;
+  while (true) {
+    const res = await service.getPlaylistItems(id, startIndex, PAGE_SIZE);
+    const items = res.Items || [];
+    allItems = allItems.concat(items);
+    if (total === null) total = res.TotalRecordCount || items.length;
+    startIndex += PAGE_SIZE;
+    if (startIndex >= total || items.length < PAGE_SIZE) break;
+  }
+  return allItems;
+}
+
+async function _fetchAndCache(id) {
+  const cached = await cacheStore.get('detail', id);
+  if (cached) { _memCache.set(id, cached); return cached; }
+  const [itemInfo, playlistItems] = await Promise.all([
+    service.getItemInfo(id),
+    fetchAllPlaylistItems(id).catch(() => null),
+  ]);
+  let tracks = playlistItems;
+  if (!tracks && itemInfo?.Type === 'MusicAlbum') {
+    const albumRes = await service.getAlbumItems(id);
+    tracks = albumRes.Items || [];
+  }
+  const data = { info: itemInfo, tracks: tracks || [] };
+  _memCache.set(id, data);
+  cacheStore.set('detail', id, data, TTL).catch(() => {});
+  return data;
+}
 
 export async function fetchDetail(id) {
-  const itemInfo = await service.getItemInfo(id);
-  const isAlbum = itemInfo.Type === 'MusicAlbum';
-  const itemsRes = isAlbum ? await service.getAlbumItems(id) : await service.getPlaylistItems(id);
-  return { info: itemInfo, tracks: itemsRes.Items || [] };
+  if (_pendingFetches.has(id)) return _pendingFetches.get(id);
+  const promise = _fetchAndCache(id);
+  _pendingFetches.set(id, promise);
+  try {
+    return await promise;
+  } finally {
+    _pendingFetches.delete(id);
+  }
 }
 
 export function getCachedDetailSync(id) {
@@ -20,21 +59,28 @@ export function getCachedDetailSync(id) {
 
 export async function getCachedDetail(id) {
   if (_memCache.has(id)) return _memCache.get(id);
+  if (_pendingFetches.has(id)) return _pendingFetches.get(id);
   return cacheStore.get('detail', id);
 }
 
 export async function prefetchDetail(id) {
   if (_memCache.has(id)) return;
-  const cached = await cacheStore.get('detail', id);
-  if (cached) { _memCache.set(id, cached); return; }
-  const data = await fetchDetail(id);
-  _memCache.set(id, data);
-  cacheStore.set('detail', id, data, TTL);
+  if (_pendingFetches.has(id)) return _pendingFetches.get(id);
+  const promise = _fetchAndCache(id);
+  _pendingFetches.set(id, promise);
+  try {
+    return await promise;
+  } finally {
+    _pendingFetches.delete(id);
+  }
+}
+
+export async function prefetchDetails(ids) {
+  await Promise.allSettled(ids.map(prefetchDetail));
 }
 
 export async function setDetailCache(id, data) {
   _memCache.set(id, data);
-  // Registrar invalidador para este ID específico (llamado desde cacheManager)
   registerInvalidator(`detail:${id}`, () => {
     _memCache.delete(id);
     cacheStore.delete('detail', id);
@@ -42,7 +88,6 @@ export async function setDetailCache(id, data) {
   return cacheStore.set('detail', id, data, TTL);
 }
 
-/** Llamado cuando el usuario añade/quita canciones de una playlist */
 export function invalidateDetail(id) {
   _memCache.delete(id);
   cacheStore.delete('detail', id);

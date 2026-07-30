@@ -20,6 +20,7 @@ import syncStatusRoutes from './routes/syncstatus.js';
 import imagesRoutes     from './routes/images.js';
 import audioRoutes      from './routes/audio.js';
 import proxyRoutes      from './routes/proxy.js';
+import lyricsRoutes     from './routes/lyrics.js';
 import { rateLimit }    from './middleware/rateLimit.js';
 
 const app = express();
@@ -51,6 +52,7 @@ app.use(instantmixRoutes);
 app.use(imagesRoutes);
 app.use(audioRoutes);
 app.use(proxyRoutes);
+app.use(lyricsRoutes);
 
 app.use((_req, res) => res.status(404).json({ error: 'Ruta no encontrada' }));
 

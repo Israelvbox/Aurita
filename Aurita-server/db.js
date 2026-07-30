@@ -116,6 +116,17 @@ export function initDb() {
     );
   `);
 
+  _db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_tracks_artist_id  ON tracks(artist_id);
+    CREATE INDEX IF NOT EXISTS idx_tracks_album_id   ON tracks(album_id);
+    CREATE INDEX IF NOT EXISTS idx_tracks_synced_at  ON tracks(synced_at);
+    CREATE INDEX IF NOT EXISTS idx_albums_artist_id  ON albums(artist_id);
+    CREATE INDEX IF NOT EXISTS idx_albums_name       ON albums(name);
+    CREATE INDEX IF NOT EXISTS idx_artists_name      ON artists(name);
+    CREATE INDEX IF NOT EXISTS idx_genres_name       ON genres(name);
+    CREATE INDEX IF NOT EXISTS idx_genres_sort_name  ON genres(sort_name);
+  `);
+
   console.log('[DB] Inicializada en', DB_PATH);
   return _db;
 }

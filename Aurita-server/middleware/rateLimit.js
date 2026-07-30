@@ -2,7 +2,10 @@ const windowMs = 60_000;
 const maxRequests = 120;
 const store = new Map();
 
+const skipPaths = ['/images/', '/audio/', '/proxy/'];
+
 export function rateLimit(req, res, next) {
+  if (skipPaths.some(p => req.path.startsWith(p))) return next();
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
   const now = Date.now();
   let entry = store.get(ip);

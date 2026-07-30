@@ -43,7 +43,7 @@ function parseRange(header, total) {
 function buildUrl(base, id, query, token) {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(query)) params.set(k, String(v));
-  params.set('Static', 'true');
+  if (!params.has('Static')) params.set('Static', 'true');
   if (token && !params.has('api_key')) params.set('api_key', token);
   return `${base}/Audio/${id}/stream.mp3?${params}`;
 }

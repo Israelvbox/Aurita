@@ -1,14 +1,19 @@
+import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play } from 'lucide-react';
+import { ArrowLeft, Play, ListPlus } from 'lucide-react';
 import { usePlayerStore } from '../store/playerStore.js';
+import { useToastStore } from '../store/toastStore.js';
 import { jellyfin } from '../api/jellyfin.js';
 import { useFavoritesStore } from '../store/favoritesStore.js';
 import CachedImage from '../components/CachedImage.jsx';
+import SaveMixModal from '../components/SaveMixModal.jsx';
+import { formatTotalDuration } from '../utils.js';
 
 export default function MixDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const { title, items } = location.state || {};
+  const [showSave, setShowSave] = useState(false);
   const playItem = usePlayerStore((s) => s.playItem);
   const currentId = usePlayerStore((s) => s.queue[s.currentIndex]?.Id);
   const favoriteIds = useFavoritesStore((s) => s.ids);
@@ -37,13 +42,31 @@ export default function MixDetail() {
       </div>
 
       {items.length > 0 && (
-        <button
-          className="play-all-btn"
-          onClick={() => playItem(items[0], items)}
-        >
-          <Play size={18} fill="currentColor" />
-          Reproducir todo
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem', padding: '0 4px 1rem' }}>
+          <button
+            className="play-all-btn"
+            style={{ flex: 1 }}
+            onClick={() => playItem(items[0], items)}
+          >
+            <Play size={18} fill="currentColor" />
+            Reproducir todo · {formatTotalDuration(items.reduce((sum, t) => sum + ((t.RunTimeTicks || 0) / 10_000_000), 0))}
+          </button>
+          <button
+            className="play-all-btn"
+            onClick={() => setShowSave(true)}
+          >
+            <ListPlus size={18} />
+            Guardar
+          </button>
+        </div>
+      )}
+
+      {showSave && (
+        <SaveMixModal
+          items={items}
+          title={title}
+          onClose={() => setShowSave(false)}
+        />
       )}
 
       <div className="track-list">

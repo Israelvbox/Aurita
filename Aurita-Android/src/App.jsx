@@ -5,8 +5,10 @@ import { Network } from '@capacitor/network';
 import { useAuthStore } from './store/authStore.js';
 import { useFavoritesStore } from './store/favoritesStore.js';
 import { usePlaylistMembershipStore } from './store/playlistMembershipStore.js';
-import { usePlayerStore } from './store/playerStore.js';
+import { usePlayerStore, ignoreStateEvents } from './store/playerStore.js';
 import { useOfflineStore } from './store/offlineStore.js';
+import { useNetworkStatsStore } from './store/networkStatsStore.js';
+import { useToastStore } from './store/toastStore.js';
 import { warmGenreIndex } from './api/genreIndex.js';
 import { service } from './api/service.js';
 import { setHomeCache } from './pages/Home.jsx';
@@ -23,6 +25,9 @@ import PlaylistDetail from './pages/PlaylistDetail.jsx';
 import ArtistDetail from './pages/ArtistDetail.jsx';
 import Settings from './pages/Settings.jsx';
 import MixDetail from './pages/MixDetail.jsx';
+import Downloads from './pages/Downloads.jsx';
+import ToastContainer from './components/ToastContainer.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import logo from './assets/logo.png';
 
 export default function App() {
@@ -46,13 +51,23 @@ export default function App() {
 
   useEffect(() => {
     if (status !== 'authenticated') return;
-    Network.getStatus().then((s) => useOfflineStore.getState().setOffline(!s.connected));
+    Network.getStatus().then((s) => {
+      useOfflineStore.getState().setOffline(!s.connected);
+      useNetworkStatsStore.getState().setConnectionType(s.connectionType);
+    });
     const handler = Network.addListener('networkStatusChange', (s) => {
       const wasOffline = useOfflineStore.getState().isOffline;
+      const toast = useToastStore.getState().show;
       useOfflineStore.getState().setOffline(!s.connected);
+      useNetworkStatsStore.getState().setConnectionType(s.connectionType);
       if (wasOffline && s.connected) {
+        toast('Conexión restablecida', 'success');
         onAppResumed();
-        usePlayerStore.getState().restoreQueue();
+        ignoreStateEvents(true);
+        usePlayerStore.getState().syncFromPlayer();
+        setTimeout(() => ignoreStateEvents(false), 500);
+      } else if (!wasOffline && !s.connected) {
+        toast('Sin conexión', 'error');
       }
     });
     return () => { handler.remove(); };
@@ -64,6 +79,8 @@ export default function App() {
     warmGenreIndex();
     useFavoritesStore.getState().hydrate();
     usePlaylistMembershipStore.getState().hydrate();
+    useOfflineStore.getState().hydrate();
+    useOfflineStore.getState().startListening();
     service.refreshLocalIndex().catch(() => {});
 
     usePlayerStore.getState().restoreQueue();
@@ -71,7 +88,7 @@ export default function App() {
 
     service.getStartupData().then((data) => {
       if (!data) return;
-      if (data.playlists?.Items) setHomeCache(data.playlists.Items);
+      if (data.playlists?.Items) setHomeCache(data.playlists.Items, data.genres);
       if (data.favorites?.Items) {
         const ids = new Set(data.favorites.Items.map(i => i.Id));
         useFavoritesStore.getState().setFromStartup(ids, data.favorites.Items);
@@ -81,7 +98,10 @@ export default function App() {
 
     // Polling de sync: cada 30s comprueba si el servidor tiene datos nuevos
     startSyncPolling();
-    return () => stopSyncPolling();
+    return () => {
+      stopSyncPolling();
+      useOfflineStore.getState().stopListening();
+    };
   }, [status]);
 
   // Cuando el usuario vuelve a la app (desde multitarea, llamada, etc.)
@@ -92,7 +112,9 @@ export default function App() {
         usePlayerStore.getState().persistNow();
       } else if (!document.hidden && status === 'authenticated') {
         onAppResumed();
-        usePlayerStore.getState().restoreQueue();
+        ignoreStateEvents(true);
+        usePlayerStore.getState().syncFromPlayer();
+        setTimeout(() => ignoreStateEvents(false), 500);
       }
     }
     document.addEventListener('visibilitychange', handleVisibility);
@@ -113,17 +135,21 @@ export default function App() {
 
   return (
     <Layout>
-      <Routes>
-        <Route path="/"             element={<Home />} />
-        <Route path="/buscar"       element={<Search />} />
-        <Route path="/biblioteca"   element={<Library />} />
-        <Route path="/favoritos"    element={<Favorites />} />
-        <Route path="/playlist/:id" element={<PlaylistDetail />} />
-        <Route path="/artist/:id"   element={<ArtistDetail />} />
-        <Route path="/ajustes"      element={<Settings />} />
-        <Route path="/mix"          element={<MixDetail />} />
-        <Route path="*"             element={<Navigate to="/" replace />} />
-      </Routes>
+      <ErrorBoundary>
+        <Routes>
+          <Route path="/"             element={<Home />} />
+          <Route path="/buscar"       element={<Search />} />
+          <Route path="/biblioteca"   element={<Library />} />
+          <Route path="/favoritos"    element={<Favorites />} />
+          <Route path="/playlist/:id" element={<PlaylistDetail />} />
+          <Route path="/artist/:id"   element={<ArtistDetail />} />
+          <Route path="/ajustes"      element={<Settings />} />
+          <Route path="/mix"          element={<MixDetail />} />
+          <Route path="/descargas"    element={<Downloads />} />
+          <Route path="*"             element={<Navigate to="/" replace />} />
+        </Routes>
+      </ErrorBoundary>
+      <ToastContainer />
     </Layout>
   );
 }

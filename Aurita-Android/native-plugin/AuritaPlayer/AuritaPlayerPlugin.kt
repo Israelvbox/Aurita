@@ -76,6 +76,7 @@ class AuritaPlayerPlugin : Plugin() {
         }
 
         fun resolvePending(parentId: String, items: List<MediaItem>) {
+            catalog[parentId] = items
             pendingFutures.remove(parentId)?.let { (future, params) ->
                 future.set(LibraryResult.ofItemList(items, params))
             }

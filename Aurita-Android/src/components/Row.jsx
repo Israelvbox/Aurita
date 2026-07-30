@@ -1,8 +1,25 @@
+import { useState } from 'react';
 import { jellyfin } from '../api/jellyfin.js';
 import { prefetchDetail } from '../api/detailCache.js';
 import CachedImage from './CachedImage.jsx';
+import { colorFor } from '../utils.js';
 
-export default function Row({ title, items, loading, onItemClick, kind = 'album' }) {
+function CardImg({ kind, item }) {
+  const [failed, setFailed] = useState(false);
+  const src = kind === 'mix'
+    ? jellyfin.imageUrl(item._mixItems?.[0]?.AlbumId || item._mixItems?.[0]?.Id, 'Primary', 300)
+    : jellyfin.imageUrl(item.Id, 'Primary', 300);
+  if (failed) {
+    return (
+      <div style={{ width: '100%', aspectRatio: 1, borderRadius: 6, background: colorFor(item.Name || ''), display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.6rem', fontWeight: 700, color: '#fff' }}>
+        {(item.Name || '?')[0].toUpperCase()}
+      </div>
+    );
+  }
+  return <CachedImage src={src} alt={item.Name} loading="lazy" onError={() => setFailed(true)} />;
+}
+
+export default function Row({ title, items, loading, onItemClick, kind = 'album', emptyMessage }) {
   return (
     <section className="row">
       <h2 className="row__title">{title}</h2>
@@ -13,7 +30,7 @@ export default function Row({ title, items, loading, onItemClick, kind = 'album'
           ))}
         </div>
       ) : items.length === 0 ? (
-        <p className="row__empty muted">Sin contenido todavía.</p>
+        <p className="row__empty muted">{emptyMessage || 'Sin contenido todavía.'}</p>
       ) : (
         <div className="row__scroll">
           {items.map((item) => (
@@ -23,10 +40,7 @@ export default function Row({ title, items, loading, onItemClick, kind = 'album'
               onClick={() => onItemClick?.(item)}
               onTouchStart={() => kind === 'album' && prefetchDetail(item.Id)}
             >
-              <CachedImage src={kind === 'mix'
-                  ? jellyfin.imageUrl(item._mixItems?.[0]?.AlbumId || item._mixItems?.[0]?.Id, 'Primary', 300)
-                  : jellyfin.imageUrl(item.Id, 'Primary', 300)} alt={item.Name} loading="lazy"
-                onError={(e) => { e.currentTarget.style.visibility = 'hidden'; }} />
+              <CardImg kind={kind} item={item} />
               <div className="card__title">{item.Name}</div>
               {kind === 'album' && (
                 <div className="card__subtitle">

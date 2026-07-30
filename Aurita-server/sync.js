@@ -1,4 +1,4 @@
-import { jellyfinGetAll } from './jellyfin-api.js';
+import { jellyfinGetAll, jellyfinRequest } from './jellyfin-api.js';
 import { getDb, upsertTrack, upsertAlbum, upsertArtist, upsertGenre, deleteWhereNotIn, setSyncMeta, getSyncMeta } from './db.js';
 import { SYNC_INTERVAL_MINUTES } from './config.js';
 import { invalidateStartupCache } from './routes/startup.js';
@@ -6,19 +6,71 @@ import { invalidateStartupCache } from './routes/startup.js';
 let _syncTimer = null;
 let _syncing   = false;
 let _lastSyncFailedAuth = false;
-let _syncVersion = 0; // se carga desde la BD la primera vez que se necesita
+let _syncVersion = 0;
 
 function getSyncVersionFromDb() {
   try { return getSyncMeta('syncVersion') || 0; } catch { return 0; }
 }
 
+function getLocalCounts() {
+  try {
+    const db = getDb();
+    return {
+      tracks:  parseInt(db.prepare('SELECT COUNT(*) AS c FROM tracks').get().c),
+      albums:  parseInt(db.prepare('SELECT COUNT(*) AS c FROM albums').get().c),
+      artists: parseInt(db.prepare('SELECT COUNT(*) AS c FROM artists').get().c),
+      genres:  parseInt(db.prepare('SELECT COUNT(*) AS c FROM genres').get().c),
+    };
+  } catch { return null; }
+}
+
+async function getJellyfinCounts() {
+  const opts = { Limit: 1, Recursive: true };
+  const [tracks, albums, artists, genres] = await Promise.all([
+    jellyfinRequest('/Items', { query: { ...opts, IncludeItemTypes: 'Audio' } }),
+    jellyfinRequest('/Items', { query: { ...opts, IncludeItemTypes: 'MusicAlbum' } }),
+    jellyfinRequest('/Items', { query: { ...opts, IncludeItemTypes: 'MusicArtist' } }),
+    jellyfinRequest('/MusicGenres', { query: { SortBy: 'SortName', Limit: 1 } }),
+  ]);
+  return {
+    tracks:  tracks?.TotalRecordCount  || 0,
+    albums:  albums?.TotalRecordCount  || 0,
+    artists: artists?.TotalRecordCount || 0,
+    genres:  genres?.TotalRecordCount  || 0,
+  };
+}
+
+async function checkForChanges() {
+  const local = getLocalCounts();
+  if (!local) return true;
+  try {
+    const remote = await getJellyfinCounts();
+    return (
+      local.tracks  !== remote.tracks  ||
+      local.albums  !== remote.albums  ||
+      local.artists !== remote.artists ||
+      local.genres  !== remote.genres
+    );
+  } catch {
+    return true;
+  }
+}
+
 export function didLastSyncFailAuth() { return _lastSyncFailedAuth; }
 export function getSyncVersion() { return _syncVersion; }
 
-export async function syncNow() {
+export async function syncNow(force = false) {
   if (_syncing) {
     console.log('[Sync] Ya hay una sincronización en curso, saltando');
     return;
+  }
+  if (!force) {
+    const changed = await checkForChanges();
+    if (!changed) {
+      _syncVersion = getSyncVersionFromDb();
+      console.log('[Sync] Sin cambios desde la última sincronización, saltando');
+      return;
+    }
   }
   _syncing = true;
   const start = Date.now();

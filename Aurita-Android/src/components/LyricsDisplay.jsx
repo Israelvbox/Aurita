@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { getCachedLyrics, setCachedLyrics } from '../api/lyricsCache.js';
 
 function parseLRC(lrcText) {
   const lines = lrcText.split('\n');
@@ -18,7 +19,7 @@ function parseLRC(lrcText) {
   return result.sort((a, b) => a.time - b.time);
 }
 
-export default function LyricsDisplay({ trackId, trackName, artistName, currentTime }) {
+export default function LyricsDisplay({ trackId, trackName, artistName, currentTime, fullscreen }) {
   const [lyrics, setLyrics] = useState(null);
   const [loading, setLoading] = useState(false);
   const [noLyrics, setNoLyrics] = useState(false);
@@ -31,38 +32,69 @@ export default function LyricsDisplay({ trackId, trackName, artistName, currentT
       setLoading(true);
       setNoLyrics(false);
       setLyrics(null);
-      try {
-        const q = `${encodeURIComponent(artistName)} ${encodeURIComponent(trackName)}`;
-        const searchRes = await fetch(`https://lrclib.net/api/search?q=${q}`, {
-          headers: { 'User-Agent': 'Aurita/1.0' },
-        });
-        if (cancelled) return;
-        if (!searchRes.ok) throw new Error();
 
-        const results = await searchRes.json();
-        if (!results?.length) {
-          if (!cancelled) { setNoLyrics(true); setLoading(false); }
+      const cached = await getCachedLyrics(trackId).catch(() => null);
+      if (cached) {
+        const parsed = cached.syncedLyrics ? parseLRC(cached.syncedLyrics) : null;
+        if (!cancelled) {
+          setLyrics(parsed || [{ time: 0, text: cached.plainLyrics || '' }]);
+          setLoading(false);
           return;
         }
+      }
 
-        const best = results[0];
-        const lrcRes = await fetch(`https://lrclib.net/api/get/${best.id}`, {
-          headers: { 'User-Agent': 'Aurita/1.0' },
-        });
-        if (cancelled) return;
-        if (!lrcRes.ok) throw new Error();
+      try {
+        const params = new URLSearchParams({ artist_name: artistName, track_name: trackName });
+        const base = window.location.origin;
+        let data = null;
 
-        const data = await lrcRes.json();
+        try {
+          const proxyRes = await fetch(`${base}/lyrics?${params}`, {
+            signal: AbortSignal.timeout(10000),
+          });
+          if (proxyRes.ok) data = await proxyRes.json();
+        } catch {}
+
+        if (!data || (!data.syncedLyrics && !data.plainLyrics)) {
+          let lrcRes = await fetch(`https://lrclib.net/api/get?${params}`, {
+            headers: { 'User-Agent': 'Aurita/1.0' },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!lrcRes.ok) {
+            const q = `${encodeURIComponent(artistName)} ${encodeURIComponent(trackName)}`;
+            lrcRes = await fetch(`https://lrclib.net/api/search?q=${q}`, {
+              headers: { 'User-Agent': 'Aurita/1.0' },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (cancelled) return;
+            if (!lrcRes.ok) throw new Error();
+            const results = await lrcRes.json();
+            if (!results?.length) {
+              if (!cancelled) { setNoLyrics(true); setLoading(false); }
+              return;
+            }
+            const best = results[0];
+            lrcRes = await fetch(`https://lrclib.net/api/get/${best.id}`, {
+              headers: { 'User-Agent': 'Aurita/1.0' },
+              signal: AbortSignal.timeout(5000),
+            });
+            if (cancelled) return;
+            if (!lrcRes.ok) throw new Error();
+          }
+          data = await lrcRes.json();
+        }
+
         const synced = data.syncedLyrics || data.plainLyrics || '';
         if (!synced) {
           if (!cancelled) { setNoLyrics(true); setLoading(false); }
           return;
         }
 
-        const parsed = data.syncedLyrics ? parseLRC(data.syncedLyrics) : null;
         if (!cancelled) {
+          const parsed = data.syncedLyrics ? parseLRC(data.syncedLyrics) : null;
           setLyrics(parsed || [{ time: 0, text: data.plainLyrics }]);
           setLoading(false);
+          setCachedLyrics(trackId, { syncedLyrics: data.syncedLyrics || null, plainLyrics: data.plainLyrics || null });
         }
       } catch {
         if (!cancelled) { setNoLyrics(true); setLoading(false); }
@@ -73,18 +105,20 @@ export default function LyricsDisplay({ trackId, trackName, artistName, currentT
     return () => { cancelled = true; };
   }, [trackId, trackName, artistName]);
 
+  const cls = fullscreen ? 'lyrics-full' : 'lyrics-peek';
+
   if (loading) {
     return (
-      <div className="lyrics-peek">
-        <div className="lyrics-peek__placeholder">Buscando letras…</div>
+      <div className={cls}>
+        <div className={`${cls}__placeholder`}>Buscando letras…</div>
       </div>
     );
   }
 
   if (noLyrics || !lyrics || !Array.isArray(lyrics) || !lyrics.length) {
     return (
-      <div className="lyrics-peek">
-        <div className="lyrics-peek__placeholder">Letras no disponibles</div>
+      <div className={cls}>
+        <div className={`${cls}__placeholder`}>Letras no disponibles</div>
       </div>
     );
   }
@@ -93,8 +127,23 @@ export default function LyricsDisplay({ trackId, trackName, artistName, currentT
 
   if (isPlain) {
     return (
-      <div className="lyrics-peek">
-        <div className="lyrics-peek__line lyrics-peek__line--active">{lyrics[0].text}</div>
+      <div className={cls}>
+        <div className={`${cls}__line ${cls}__line--active`}>{lyrics[0].text}</div>
+      </div>
+    );
+  }
+
+  if (fullscreen) {
+    return (
+      <div className="lyrics-full">
+        {lyrics.map((l, i) => (
+          <div
+            key={i}
+            className={`lyrics-full__line ${currentTime >= l.time ? 'lyrics-full__line--active' : ''}`}
+          >
+            {l.text}
+          </div>
+        ))}
       </div>
     );
   }

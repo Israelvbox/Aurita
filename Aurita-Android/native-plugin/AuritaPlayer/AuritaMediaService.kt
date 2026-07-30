@@ -12,6 +12,9 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
+
+import org.json.JSONArray
+import org.json.JSONObject
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -85,6 +88,8 @@ class AuritaMediaService : MediaLibraryService() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val progressHandler = Handler(Looper.getMainLooper())
+    private var lastStateNotifyMs = 0L
+    private var lastPositionSaveMs = 0L
     private val progressRunnable = object : Runnable {
         override fun run() {
             val p = player ?: return
@@ -96,13 +101,22 @@ class AuritaMediaService : MediaLibraryService() {
                     updateNotification()
                     return
                 }
-                AuritaPlayerPlugin.notifyStateChange(p)
-                savePosition(p.currentPosition)
-                preloadNextTracks(p)
+
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastStateNotifyMs >= 1000) {
+                    AuritaPlayerPlugin.notifyStateChange(p)
+                    lastStateNotifyMs = now
+                }
+                if (now - lastPositionSaveMs >= 3000) {
+                    savePosition(p.currentPosition)
+                    lastPositionSaveMs = now
+                }
+
                 progressHandler.postDelayed(this, 250)
             }
         }
     }
+    private var preloadedTrackIndex = -1
 
     private fun prefs() = getSharedPreferences("aurita_player", MODE_PRIVATE)
 
@@ -110,6 +124,35 @@ class AuritaMediaService : MediaLibraryService() {
         if (posMs > 0) {
             prefs().edit().putLong("last_position", posMs).apply()
         }
+    }
+
+    private fun saveCurrentIndex(index: Int) {
+        prefs().edit().putInt("last_queue_index", index).apply()
+    }
+
+    private fun saveFullPlayerState() {
+        val p = player ?: return
+        if (p.mediaItemCount == 0) return
+        try {
+            val prefs = getSharedPreferences("aurita_player", MODE_PRIVATE)
+            val jsonArray = JSONArray()
+            for (i in 0 until p.mediaItemCount) {
+                val item = p.getMediaItemAt(i)
+                val uri = item.localConfiguration?.uri?.toString() ?: ""
+                val meta = item.mediaMetadata
+                val obj = JSONObject()
+                obj.put("url", uri)
+                obj.put("title", meta.title?.toString() ?: "")
+                obj.put("artist", meta.artist?.toString() ?: "")
+                obj.put("album", meta.albumTitle?.toString() ?: "")
+                obj.put("artworkUrl", meta.artworkUri?.toString() ?: "")
+                jsonArray.put(obj)
+            }
+            prefs.edit()
+                .putString("last_queue_json", jsonArray.toString())
+                .putInt("last_queue_index", p.currentMediaItemIndex)
+                .apply()
+        } catch (_: Exception) {}
     }
 
     private fun restorePlayback() {
@@ -173,6 +216,8 @@ class AuritaMediaService : MediaLibraryService() {
         if (p.mediaItemCount == 0) return
         val next = p.currentMediaItemIndex + 1
         if (next >= p.mediaItemCount) return
+        if (next == preloadedTrackIndex && preloadedTrackIndex >= 0) return
+        preloadedTrackIndex = next
         val nextItem = p.getMediaItemAt(next)
         val uri = nextItem.localConfiguration?.uri ?: return
         val cache = audioCache ?: return
@@ -315,9 +360,9 @@ class AuritaMediaService : MediaLibraryService() {
             AuritaPlayerPlugin.pendingFutures[parentMediaId] = Pair(future, params)
             AuritaPlayerPlugin.notifyLoadChildren(parentMediaId)
             Handler(Looper.getMainLooper()).postDelayed({
-                val pending = AuritaPlayerPlugin.pendingFutures.remove(parentMediaId)
+                val pending = AuritaPlayerPlugin.pendingFutures[parentMediaId]
                 if (pending != null && !pending.first.isDone) {
-                    pending.first.set(LibraryResult.ofItemList(ImmutableList.of(), pending.second))
+                    AuritaPlayerPlugin.resolvePending(parentMediaId, ImmutableList.of())
                 }
             }, 5000)
             return future
@@ -406,13 +451,23 @@ class AuritaMediaService : MediaLibraryService() {
                     progressHandler.postDelayed(progressRunnable, 250)
                 } else {
                     progressHandler.removeCallbacks(progressRunnable)
-                    player?.let { savePosition(it.currentPosition) }
+                    player?.let { p ->
+                        savePosition(p.currentPosition)
+                        saveCurrentIndex(p.currentMediaItemIndex)
+                    }
                 }
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                retryCount = 0
                 AuritaPlayerPlugin.notifyStateChange(player)
                 updateNotification()
+                player?.let { p ->
+                    saveCurrentIndex(p.currentMediaItemIndex)
+                    saveFullPlayerState()
+                    preloadedTrackIndex = -1
+                    preloadNextTracks(p)
+                }
             }
 
             override fun onPlaybackStateChanged(state: Int) {
@@ -420,6 +475,9 @@ class AuritaMediaService : MediaLibraryService() {
                 when (state) {
                     Player.STATE_ENDED, Player.STATE_IDLE -> {
                         releaseWakeLock()
+                    }
+                    Player.STATE_READY -> {
+                        player?.let { saveCurrentIndex(it.currentMediaItemIndex) }
                     }
                 }
             }
@@ -531,7 +589,7 @@ class AuritaMediaService : MediaLibraryService() {
 
         when (intent?.action) {
             ACTION_PAUSE  -> {
-                player?.let { savePosition(it.currentPosition); it.pause() }
+                player?.let { savePosition(it.currentPosition); saveCurrentIndex(it.currentMediaItemIndex); it.pause() }
             }
             ACTION_RESUME -> {
                 val p = player
@@ -578,11 +636,13 @@ class AuritaMediaService : MediaLibraryService() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        player?.let { savePosition(it.currentPosition) }
-        val p = player
-        if (p == null || (p.mediaItemCount == 0 && p.playbackState == Player.STATE_IDLE)) {
-            stopSelf()
+        player?.let { p ->
+            savePosition(p.currentPosition)
+            saveCurrentIndex(p.currentMediaItemIndex)
+            p.stop()
+            p.clearMediaItems()
         }
+        stopSelf()
         super.onTaskRemoved(rootIntent)
     }
 

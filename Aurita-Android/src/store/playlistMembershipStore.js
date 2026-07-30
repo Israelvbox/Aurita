@@ -10,13 +10,10 @@ export const usePlaylistMembershipStore = create((set, get) => ({
     try {
       const playlistsRes = await service.getUserPlaylists();
       const playlists = playlistsRes.Items || [];
-      const itemsLists = await Promise.all(
-        playlists.map((p) => service.getPlaylistItems(p.Id).catch(() => ({ Items: [] })))
-      );
-      const ids = new Set();
-      for (const res of itemsLists) {
-        for (const item of res.Items || []) ids.add(item.Id);
-      }
+      const playlistIds = playlists.map((p) => p.Id);
+      if (playlistIds.length === 0) { set({ ids: new Set(), loaded: true }); return; }
+      const res = await service.getAllPlaylistItems(playlistIds);
+      const ids = new Set((res.Items || []).map((i) => i.Id));
       set({ ids, loaded: true });
     } catch (err) {
       console.warn('[Aurita] No se pudo comprobar en qué playlists están tus canciones:', err);

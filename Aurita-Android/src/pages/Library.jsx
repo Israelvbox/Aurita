@@ -1,21 +1,17 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search as SearchIcon, Trash2, Download } from 'lucide-react';
-import { registerPlugin } from '@capacitor/core';
+import { Plus, Search as SearchIcon, Trash2, Download, Music } from 'lucide-react';
 import { jellyfin } from '../api/jellyfin.js';
 import { service } from '../api/service.js';
-import { prefetchDetail } from '../api/detailCache.js';
+import { prefetchDetail, prefetchDetails } from '../api/detailCache.js';
 import { registerInvalidator, onPlaylistCreated, onPlaylistDeleted } from '../api/cacheManager.js';
 import CachedImage from '../components/CachedImage.jsx';
 import PlaylistFormModal from '../components/PlaylistFormModal.jsx';
+import ConfirmModal from '../components/ConfirmModal.jsx';
 import { cacheStore } from '../db/storage.js';
 import { useOfflineStore } from '../store/offlineStore.js';
-import { usePlayerStore } from '../store/playerStore.js';
-import { getAllTracksLocal } from '../api/localIndex.js';
-
-const AuritaPlayer = registerPlugin('AuritaPlayer');
-
-function normalize(s='') { return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
+import { useToastStore } from '../store/toastStore.js';
+import { normalize } from '../utils.js';
 
 let _playlistsCache = [];
 
@@ -24,11 +20,13 @@ registerInvalidator('library', () => { _playlistsCache = []; });
 export function Library() {
   const navigate = useNavigate();
   const isOffline = useOfflineStore((s) => s.isOffline);
-  const playItem  = usePlayerStore((s) => s.playItem);
+  const downloadedCount = useOfflineStore((s) => s.downloadedIds.size);
+  const toast = useToastStore((s) => s.show);
   const [playlists, setPlaylists] = useState(_playlistsCache);
   const [loading,   setLoading]   = useState(_playlistsCache.length === 0);
   const [term,      setTerm]      = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [downloads, setDownloads] = useState(null);
 
   async function load() {
@@ -38,6 +36,9 @@ export function Library() {
       _playlistsCache = res.Items || [];
       setPlaylists(_playlistsCache);
       setLoading(false);
+      setTimeout(() => {
+        prefetchDetails(_playlistsCache.slice(0, 5).map((p) => p.Id)).catch(() => {});
+      }, 200);
     } catch {
       const offlineList = await cacheStore.get('offline_playlist', 'list') || [];
       if (offlineList.length > 0) {
@@ -61,13 +62,10 @@ export function Library() {
 
   async function loadDownloads() {
     try {
-      const result = await AuritaPlayer.getDownloadedIds();
-      const ids = result.ids || [];
-      const allTracks = getAllTracksLocal() || [];
-      const downloaded = allTracks.filter((t) => ids.includes(t.Id));
-      setDownloads({ ids, tracks: downloaded, count: downloaded.length });
+      const list = await cacheStore.get('offline_playlist', 'list') || [];
+      setDownloads(list);
     } catch {
-      setDownloads({ ids: [], tracks: [], count: 0 });
+      setDownloads([]);
     }
   }
 
@@ -80,29 +78,39 @@ export function Library() {
   async function handleCreate({ name }) {
     await jellyfin.createPlaylist(name);
     onPlaylistCreated();
+    toast('Playlist creada', 'success');
     await load();
   }
 
   async function handleDelete(e, id, name) {
     e.stopPropagation();
-    if (!confirm(`¿Borrar "${name}"?`)) return;
-    await jellyfin.deletePlaylist(id);
-    onPlaylistDeleted(id);
+    setDeleteTarget({ id, name });
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    await jellyfin.deletePlaylist(deleteTarget.id);
+    toast('Playlist eliminada', 'error');
+    onPlaylistDeleted(deleteTarget.id);
     _playlistsCache = [];
     setPlaylists([]);
     setLoading(true);
+    setDeleteTarget(null);
     await load();
-  }
-
-  function handlePlayDownloaded(track) {
-    playItem(track, [track]);
   }
 
   return (
     <div className="page" style={{ paddingBottom: 'calc(var(--bottom-area-h) + 60px)' }}>
       <div className="page-header">
         <h1 className="page-title">{isOffline ? 'Sin conexión' : 'Biblioteca'}</h1>
-        {!isOffline && <button className="fab-small" onClick={() => setShowModal(true)}><Plus size={20} /></button>}
+        <div className="page-header__actions">
+          {downloadedCount > 0 && (
+            <button className="fab-small" onClick={() => navigate('/descargas')} title="Descargas">
+              <Download size={18} />
+            </button>
+          )}
+          {!isOffline && <button className="fab-small" onClick={() => setShowModal(true)}><Plus size={20} /></button>}
+        </div>
       </div>
       <div className="search-wrap">
         <SearchIcon size={16} className="search-icon" />
@@ -110,38 +118,32 @@ export function Library() {
           value={term} onChange={(e) => setTerm(e.target.value)} />
       </div>
 
-      {isOffline && downloads && downloads.count > 0 && (
+      {isOffline && downloads && downloads.length > 0 && (
         <>
           <h2 className="page-section-title">
             <Download size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} />
-            Descargadas ({downloads.count})
+            Descargadas ({downloads.length})
           </h2>
           <div className="list-view" style={{ marginBottom: 16 }}>
-            {downloads.tracks.slice(0, 20).map((t) => (
-              <div key={t.Id} className="list-item" onClick={() => handlePlayDownloaded(t)}>
-                <CachedImage src={jellyfin.imageUrl(t.AlbumId || t.Id, 'Primary', 56, t.ImageTags?.Primary)} alt="" className="list-item__art" />
+            {downloads.map((p) => (
+              <div key={p.Id} className="list-item" onClick={() => navigate(`/playlist/${p.Id}`)}>
+                <CachedImage src={jellyfin.imageUrl(p.Id,'Primary',56,p.ImageTags?.Primary)} alt="" className="list-item__art" />
                 <div className="list-item__info">
-                  <div className="list-item__name">{t.Name}</div>
-                  <div className="list-item__sub muted">{t.AlbumArtist}</div>
-                </div>
-              </div>
-            ))}
-            {downloads.count > 20 && (
-              <div className="list-item" onClick={() => navigate('/search')}>
-                <div className="list-item__info">
-                  <div className="list-item__name" style={{ color: 'var(--accent)' }}>
-                    Ver todas ({downloads.count}) →
+                  <div className="list-item__name">{p.Name}</div>
+                  <div className="list-item__sub muted">
+                    <Music size={12} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                    Playlist descargada
                   </div>
                 </div>
               </div>
-            )}
+            ))}
           </div>
         </>
       )}
 
-      {isOffline && (!downloads || downloads.count === 0) && (
+      {isOffline && (!downloads || downloads.length === 0) && (
         <p className="muted page-pad" style={{ marginTop: 12 }}>
-          No hay canciones descargadas. Conectate a internet, descargá algunas y volvé.
+          No hay playlists descargadas. Conectate a internet, descargá una playlist y volvé.
         </p>
       )}
 
@@ -164,6 +166,17 @@ export function Library() {
         </div>
       }
       {showModal && <PlaylistFormModal onClose={() => setShowModal(false)} onSubmit={handleCreate} />}
+      {deleteTarget && (
+        <ConfirmModal
+          title="Borrar playlist"
+          message={`¿Borrar "${deleteTarget.name}"?`}
+          confirmLabel="Borrar"
+          cancelLabel="Cancelar"
+          confirmDanger
+          onConfirm={confirmDelete}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }

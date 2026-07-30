@@ -1,4 +1,5 @@
 import { secureStore } from '../db/storage.js';
+import { useNetworkStatsStore } from '../store/networkStatsStore.js';
 
 const DEVICE_NAME  = 'Aurita';
 const APP_VERSION  = '0.1.0';
@@ -121,6 +122,11 @@ export class JellyfinClient {
     }
     if (res.status === 204) return null;
     const text = await res.text();
+    const bytes = new Blob([text]).size;
+    if (bytes > 0) {
+      const store = useNetworkStatsStore.getState();
+      store.addBytes(bytes, store.lastConnectionType);
+    }
     return text ? JSON.parse(text) : null;
   }
 
@@ -129,11 +135,15 @@ export class JellyfinClient {
   imageUrl(itemId, type = 'Primary', maxSize = 300, tag = null) {
     if (!itemId) return null;
     const tagParam = tag ? `&tag=${encodeURIComponent(tag)}` : '';
-    return `${this.baseUrl}/images/${itemId}/${type}?maxWidth=${maxSize}&maxHeight=${maxSize}&quality=85${tagParam}`;
+    return `${this.baseUrl}/images/${itemId}/${type}?maxWidth=${maxSize}&maxHeight=${maxSize}&quality=85${tagParam}&api_key=${this.token}`;
   }
 
-  streamUrl(itemId) {
-    return `${this.baseUrl}/audio/${itemId}/stream.mp3?UserId=${this.userId}&DeviceId=${this.deviceId}&api_key=${this.token}&Static=true`;
+  streamUrl(itemId, bitrate = 0) {
+    const base = `${this.baseUrl}/audio/${itemId}/stream.mp3?UserId=${this.userId}&DeviceId=${this.deviceId}&api_key=${this.token}`;
+    if (bitrate > 0) {
+      return `${base}&Static=false&AudioBitrate=${bitrate}`;
+    }
+    return `${base}&Static=true`;
   }
 
   /* ---------- Consultas ---------- */
@@ -368,10 +378,9 @@ export class JellyfinClient {
   }
 
   addToPlaylist(playlistId, itemIds) {
-    const idsStr = itemIds.map(id => `Ids=${encodeURIComponent(id)}`).join('&');
-    return this.request(`/Playlists/${playlistId}/Items?${idsStr}`, {
+    return this.request(`/Playlists/${playlistId}/Items`, {
       method: 'POST',
-      query: { UserId: this.userId },
+      query: { ids: itemIds.join(','), UserId: this.userId },
     });
   }
 
